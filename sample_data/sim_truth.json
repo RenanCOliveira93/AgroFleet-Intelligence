@@ -1,0 +1,77 @@
+{
+ "events": [
+  {
+   "machine_id": "SIM-02",
+   "type": "stop",
+   "start": "2026-03-10T10:10:30+00:00",
+   "end": "2026-03-10T10:17:30+00:00",
+   "origin": "simulated"
+  },
+  {
+   "machine_id": "SIM-03",
+   "type": "gnss_loss",
+   "start": "2026-03-10T10:08:30+00:00",
+   "end": "2026-03-10T10:12:30+00:00",
+   "origin": "simulated"
+  },
+  {
+   "machine_id": "SIM-03",
+   "type": "missing_data",
+   "start": "2026-03-10T10:03:24+00:00",
+   "end": "2026-03-10T10:05:54+00:00",
+   "origin": "simulated"
+  },
+  {
+   "machine_id": "SIM-04",
+   "type": "abnormal_flow",
+   "start": "2026-03-10T10:14:15+00:00",
+   "end": "2026-03-10T10:19:15+00:00",
+   "origin": "simulated"
+  }
+ ],
+ "areas": {
+  "SIM-01": {
+   "planned_gross_ha": 22.8,
+   "planned_unique_ha": 21.0,
+   "planned_unique_inside_field_ha": 20.0,
+   "field_ha": 20.0,
+   "nominal_overlap_pct_between_adjacent_passes": 8.333333333333337,
+   "executed_seconds": 2628.0,
+   "completed": true
+  },
+  "SIM-02": {
+   "planned_gross_ha": 21.6,
+   "planned_unique_ha": 20.75,
+   "planned_unique_inside_field_ha": 20.0,
+   "field_ha": 20.0,
+   "nominal_overlap_pct_between_adjacent_passes": 4.1666666666666625,
+   "executed_seconds": 3237.0,
+   "completed": true
+  },
+  "SIM-03": {
+   "planned_gross_ha": 20.4,
+   "planned_unique_ha": 20.4,
+   "planned_unique_inside_field_ha": 20.0,
+   "field_ha": 20.0,
+   "nominal_overlap_pct_between_adjacent_passes": 0.0,
+   "executed_seconds": 2349.0,
+   "completed": true
+  },
+  "SIM-04": {
+   "planned_gross_ha": 22.8,
+   "planned_unique_ha": 21.0,
+   "planned_unique_inside_field_ha": 20.0,
+   "field_ha": 20.0,
+   "nominal_overlap_pct_between_adjacent_passes": 8.333333333333337,
+   "executed_seconds": 3117.0,
+   "completed": true
+  }
+ },
+ "meta": {
+  "seed": 7,
+  "start": "2026-03-10T10:00:00+00:00",
+  "dt_s": 1.0,
+  "origin": "simulated",
+  "note": "Todos os dados e eventos s\u00e3o simulados."
+ }
+}

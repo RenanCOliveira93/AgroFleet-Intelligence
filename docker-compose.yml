@@ -1,0 +1,72 @@
+# Portável entre Docker e Podman (imagens totalmente qualificadas; sem recursos exclusivos do Docker).
+#   docker compose up --build        |        podman compose up --build
+# O simulador fica no perfil "sim":  podman compose --profile sim up simulator
+services:
+  db:
+    # PostGIS oficial. Em Apple Silicon a imagem é amd64 (roda emulada; mais lenta). Em x86_64/arm64 nativo troque por uma imagem multiarch.
+    image: docker.io/postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agrofleet}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+      POSTGRES_DB: ${POSTGRES_DB:-agrofleet}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  mosquitto:
+    image: docker.io/library/eclipse-mosquitto:2
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    environment:
+      MQTT_DEVICE_USER: ${MQTT_DEVICE_USER:-device}
+      MQTT_DEVICE_PASSWORD: ${MQTT_DEVICE_PASSWORD:?defina MQTT_DEVICE_PASSWORD no .env}
+      MQTT_INGEST_USER: ${MQTT_INGEST_USER:-ingest}
+      MQTT_INGEST_PASSWORD: ${MQTT_INGEST_PASSWORD:?defina MQTT_INGEST_PASSWORD no .env}
+    volumes:
+      - ./infra/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./infra/mosquitto/entrypoint.sh:/entrypoint.sh:ro
+      - mqttdata:/mosquitto/data
+    ports: ["${MQTT_PORT_HOST:-1883}:1883"]
+  backend:
+    build: { context: ., dockerfile: infra/Dockerfile.backend }
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-agrofleet}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-agrofleet}
+      AGROFLEET_ENV: ${AGROFLEET_ENV:-dev}
+      AGROFLEET_AUTH_SECRET: ${AGROFLEET_AUTH_SECRET:?defina AGROFLEET_AUTH_SECRET (>= 32 caracteres) no .env}
+      AGROFLEET_ADMIN_USER: ${AGROFLEET_ADMIN_USER:-admin}
+      AGROFLEET_ADMIN_PASSWORD: ${AGROFLEET_ADMIN_PASSWORD:-}
+      AGROFLEET_ANALYST_USER: ${AGROFLEET_ANALYST_USER:-analyst}
+      AGROFLEET_ANALYST_PASSWORD: ${AGROFLEET_ANALYST_PASSWORD:-}
+      AGROFLEET_VIEWER_USER: ${AGROFLEET_VIEWER_USER:-viewer}
+      AGROFLEET_VIEWER_PASSWORD: ${AGROFLEET_VIEWER_PASSWORD:-}
+      MQTT_HOST: mosquitto
+      MQTT_USER: ${MQTT_INGEST_USER:-ingest}
+      MQTT_PASSWORD: ${MQTT_INGEST_PASSWORD}
+    depends_on:
+      db: { condition: service_healthy }
+      mosquitto: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  frontend:
+    build: { context: ., dockerfile: infra/Dockerfile.frontend }
+    ports: ["${HTTP_PORT:-8080}:80"]
+    depends_on:
+      backend: { condition: service_healthy }
+  simulator:
+    # Publica a frota SIMULADA (origin=simulated) no broker. Só publica; não existe canal de comando.
+    profiles: ["sim"]
+    build: { context: ., dockerfile: infra/Dockerfile.backend }
+    command: ["python", "simulator/publish.py", "--host", "mosquitto", "--speedup", "${SIM_SPEEDUP:-20}", "--seed", "${SIM_SEED:-7}", "--max-seconds", "${SIM_MAX_SECONDS:-3600}"]
+    environment:
+      MQTT_USER: ${MQTT_DEVICE_USER:-device}
+      MQTT_PASSWORD: ${MQTT_DEVICE_PASSWORD}
+    depends_on:
+      mosquitto: { condition: service_started }
+      backend: { condition: service_healthy }
+volumes:
+  pgdata:
+  mqttdata:

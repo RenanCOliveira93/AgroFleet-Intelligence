@@ -1,0 +1,8 @@
+{
+  "type": "FeatureCollection",
+  "features": [{
+    "type": "Feature",
+    "properties": {"id": "F1", "name": "Talhão de exemplo (fictício)"},
+    "geometry": {"type": "Polygon", "coordinates": [[[-45.1005, -20.0995], [-45.0990, -20.0995], [-45.0990, -20.1010], [-45.1005, -20.1010], [-45.1005, -20.0995]]]}
+  }]
+}

@@ -1,0 +1,4 @@
+[
+  {"machine_id": "M2", "ts": "2026-05-01T12:00:00Z", "lat": -20.2, "lon": -45.2, "speed_ms": 5.0, "state": "working", "flow_lpm": 72.0},
+  {"machine_id": "M2", "ts": "2026-05-01T12:00:01Z", "lat": -20.20004, "lon": -45.2, "speed_ms": 5.0, "state": "working", "flow_lpm": null}
+]

@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0",
+  "type": "telemetry",
+  "message_id": "FIELD-TEST-1-000004",
+  "sent_at": "2026-05-01T12:00:03+00:00",
+  "data": {"machine_id": "FIELD-TEST-1", "ts": "2026-05-01T12:00:03+00:00", "origin": "real", "set_speed_ms": 6.0}
+}

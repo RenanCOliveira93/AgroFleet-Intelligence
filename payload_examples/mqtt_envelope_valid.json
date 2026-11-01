@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "type": "telemetry",
+  "message_id": "FIELD-TEST-1-000001",
+  "sent_at": "2026-05-01T12:00:00+00:00",
+  "data": {
+    "machine_id": "FIELD-TEST-1",
+    "ts": "2026-05-01T12:00:00+00:00",
+    "origin": "real",
+    "lat": -20.1,
+    "lon": -45.1,
+    "speed_ms": 5.0,
+    "state": "working",
+    "gnss_fix": "rtk_fixed",
+    "accuracy_m": 0.03,
+    "flow_lpm": 72.0,
+    "pressure_bar": 3.0,
+    "tank_level_l": 1480.0,
+    "working_width_m": 24.0,
+    "application_rate_lha": 100.0,
+    "error_codes": [],
+    "sensor_quality": {"flow": "ok", "pressure": "ok"},
+    "field_id": "F1",
+    "operator_id": "OP-9"
+  }
+}

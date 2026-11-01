@@ -1,0 +1,3 @@
+machine_id,timestamp,lat,lon,speed_kmh,state,flow,pressure
+FIELD-TEST-1,2026-05-01 12:00:00,-20.100000,-45.100000,18,working,72,3.0
+FIELD-TEST-1,2026-05-01 12:00:01,-20.100045,-45.100000,18,working,72,3.0

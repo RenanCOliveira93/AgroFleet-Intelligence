@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "type": "telemetry",
+  "message_id": "FIELD-TEST-1-000002",
+  "sent_at": "2026-05-01T12:00:01+00:00",
+  "data": {
+    "machine_id": "FIELD-TEST-1",
+    "ts": "2026-05-01T12:00:01+00:00",
+    "origin": "real",
+    "state": "working",
+    "gnss_fix": "none"
+  }
+}

@@ -1,0 +1,74 @@
+{
+ "db": "postgresql",
+ "origin": "simulated",
+ "machines": {
+  "SIM-01": {
+   "track_length_m": {
+    "postgis_geography": 12089.695607296077,
+    "pyproj_geod": 12089.69560725964,
+    "python_utm_metrics_distance_km_x1000": 12096.338212920527,
+    "note": "as 2 primeiras usam TODOS os pontos com posi\u00e7\u00e3o (inclui reta sobre perda de GNSS); a 3\u00aa exclui saltos e lacunas por defini\u00e7\u00e3o"
+   },
+   "field_area_m2": {
+    "postgis_geography": 199780.43062772602,
+    "python_utm": 199999.99999931024,
+    "truth_planar_m2": 200000.0
+   },
+   "points_within_field_postgis_st_within": 1990,
+   "samples_with_position": 2628,
+   "rel_diff_track_postgis_vs_geod": 3.01381142264745e-12,
+   "rel_diff_area_utm_vs_geography": 0.0010990534503019234
+  },
+  "SIM-02": {
+   "track_length_m": {
+    "postgis_geography": 13784.19271166447,
+    "pyproj_geod": 13784.192711677713,
+    "python_utm_metrics_distance_km_x1000": 13791.728227812178,
+    "note": "as 2 primeiras usam TODOS os pontos com posi\u00e7\u00e3o (inclui reta sobre perda de GNSS); a 3\u00aa exclui saltos e lacunas por defini\u00e7\u00e3o"
+   },
+   "field_area_m2": {
+    "postgis_geography": 199781.7979641948,
+    "python_utm": 199999.99999968568,
+    "truth_planar_m2": 200000.0
+   },
+   "points_within_field_postgis_st_within": 2293,
+   "samples_with_position": 3237,
+   "rel_diff_track_postgis_vs_geod": -9.607870055106105e-13,
+   "rel_diff_area_utm_vs_geography": 0.0010922017807146744
+  },
+  "SIM-03": {
+   "track_length_m": {
+    "postgis_geography": 10852.50198106149,
+    "pyproj_geod": 10852.501981046522,
+    "python_utm_metrics_distance_km_x1000": 10682.789701484038,
+    "note": "as 2 primeiras usam TODOS os pontos com posi\u00e7\u00e3o (inclui reta sobre perda de GNSS); a 3\u00aa exclui saltos e lacunas por defini\u00e7\u00e3o"
+   },
+   "field_area_m2": {
+    "postgis_geography": 199780.43036158383,
+    "python_utm": 199999.99999956926,
+    "truth_planar_m2": 200000.0
+   },
+   "points_within_field_postgis_st_within": 1615,
+   "samples_with_position": 2109,
+   "rel_diff_track_postgis_vs_geod": 1.3793410857942945e-12,
+   "rel_diff_area_utm_vs_geography": 0.0010990547852360866
+  },
+  "SIM-04": {
+   "track_length_m": {
+    "postgis_geography": 15792.473497506991,
+    "pyproj_geod": 15792.4734975134,
+    "python_utm_metrics_distance_km_x1000": 15801.108548720324,
+    "note": "as 2 primeiras usam TODOS os pontos com posi\u00e7\u00e3o (inclui reta sobre perda de GNSS); a 3\u00aa exclui saltos e lacunas por defini\u00e7\u00e3o"
+   },
+   "field_area_m2": {
+    "postgis_geography": 199781.79769977927,
+    "python_utm": 199999.99999980206,
+    "truth_planar_m2": 200000.0
+   },
+   "points_within_field_postgis_st_within": 1984,
+   "samples_with_position": 3117,
+   "rel_diff_track_postgis_vs_geod": -4.057865155004947e-13,
+   "rel_diff_area_utm_vs_geography": 0.0010922031062643445
+  }
+ }
+}

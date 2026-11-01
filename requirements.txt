@@ -1,0 +1,16 @@
+# Execução (backend + simulador). Testes/notebooks: requirements-dev.txt
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+pydantic==2.14.2
+sqlalchemy==2.1.6
+psycopg[binary]==3.3.6
+paho-mqtt==2.1.0
+shapely==2.2.0
+pyproj==3.7.2
+pandas==3.1.0
+numpy==2.4.6
+scikit-learn==1.9.1
+gpxpy==1.6.2
+PyJWT==2.15.1
+python-multipart==0.0.33
+websockets==17.4
