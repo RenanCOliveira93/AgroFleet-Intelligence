@@ -1,7 +1,7 @@
 """Autenticação básica por papéis: viewer < analyst < admin. Token JWT HS256; senha com scrypt (stdlib).
 
 Escopo honesto: é controle de acesso simples para uma instalação única. Não há MFA, SSO, rotação de segredo,
-revogação de token nem limitação de tentativas (ver docs/pt-BR/04_arquitetura.md (seção Segurança)).
+revogação de token nem limitação de tentativas (ver docs/GUIA_TECNICO.md (seção 11)).
 """
 from __future__ import annotations
 

@@ -1,5 +1,5 @@
 """Integração com PostGIS e Mosquitto REAIS. Marcados 'infra': rodam com `pytest -m infra` e as variáveis abaixo
-(a pilha do compose, ou contêineres avulsos — ver docs/pt-BR/manual_integracao.md (seção Testes de infraestrutura)). Sem as variáveis, são pulados."""
+(a pilha do compose, ou contêineres avulsos — ver docs/GUIA_TECNICO.md (seção 4.6)). Sem as variáveis, são pulados."""
 import json
 import os
 import time

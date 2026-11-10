@@ -7,3 +7,10 @@ __pycache__/
 .env
 *.pyc
 .ipynb_checkpoints/
+.DS_Store
+*.log
+.env.*
+!.env.example
+*.pt
+*.pkl
+*.joblib

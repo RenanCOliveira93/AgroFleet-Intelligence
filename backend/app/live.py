@@ -1,7 +1,7 @@
 """Caminho de streaming: MQTT -> fila -> lote -> banco -> regras de alerta -> WebSocket.
 
 Fila em memória (queue.Queue): se o processo cair, mensagens ainda não gravadas se perdem; o QoS 1 do MQTT só protege
-até o ACK do cliente, não até o commit no banco (limitação documentada em docs/pt-BR/04_arquitetura.md e 09_limitacoes.md).
+até o ACK do cliente, não até o commit no banco (limitação documentada em docs/GUIA_TECNICO.md, seção 10).
 """
 from __future__ import annotations
 

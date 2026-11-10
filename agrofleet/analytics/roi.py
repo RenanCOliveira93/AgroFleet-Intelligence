@@ -4,7 +4,7 @@ NENHUM valor padrão aqui é uma estimativa de mercado. ``EXAMPLE_INPUTS`` é um
 cálculo (``is_example=True`` aparece em toda saída). Cada premissa carrega sua origem: "assumed" (chute do usuário),
 "user" (informado) ou "measured_telemetry" (vinda das métricas da frota, com a origem simulado/real da telemetria).
 
-Modelo (ver docs/pt-BR/06_algoritmos_modelos.md (seção ROI)):
+Modelo (ver docs/GUIA_TECNICO.md (seção 7.7)):
   custo fixo anual/máquina = (capex − residual)/vida + juros·(capex+residual)/2 + manutenção%·capex
   horas/ano exigidas       = área_ano·aplicações / produtividade_autônoma(ha/h)
   custo autônomo/ha        = (n·fixo + (energia+supervisão)·horas) / (área·aplicações) + produto/ha·(1+sobreposição_auto)

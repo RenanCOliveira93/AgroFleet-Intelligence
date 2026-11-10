@@ -74,7 +74,7 @@ def kmh(ms: float) -> float:
 
 def expected_flow_lpm(rate_lha: float, speed_ms: float, width_m: float) -> float:
     """Vazão (L/min) necessária para aplicar ``rate_lha`` a ``speed_ms`` com barra de ``width_m``.
-    L/min = L/ha * (km/h) * m / 600.  Derivação em docs/pt-BR/06_algoritmos_modelos.md."""
+    L/min = L/ha * (km/h) * m / 600.  Derivação em docs/GUIA_TECNICO.md (seção 7.3)."""
     return rate_lha * kmh(speed_ms) * width_m / 600.0
 
 
