@@ -56,6 +56,14 @@ describe("applyTelemetry", () => {
     expect(out[0].alerts).toBe(2);
     expect(rows[0].state).toBe("idle");      // imutável
   });
+  it("campos 1.1: copia os presentes (inclusive null) e preserva os ausentes da mensagem", () => {
+    const base = [{ ...rows[0], fuel_level_pct: 60, battery_soc_pct: null }];
+    const v11 = applyTelemetry(base, [{ machine_id: "A", origin: "simulated", state: "working", ts: "y", fuel_level_pct: 59.6, engine_rpm: null } as never]);
+    expect(v11[0].fuel_level_pct).toBe(59.6);
+    expect(v11[0].engine_rpm).toBeNull();
+    const v10 = applyTelemetry(base, [{ machine_id: "A", origin: "simulated", state: "working", ts: "y" } as never]);   // backend 1.0
+    expect(v10[0].fuel_level_pct).toBe(60);
+  });
 });
 
 describe("sparkPath", () => {

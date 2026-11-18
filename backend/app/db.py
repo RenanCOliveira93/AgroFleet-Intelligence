@@ -81,6 +81,35 @@ class AlertRow(Base):
     origin = Column(String(16), nullable=False); experimental = Column(Boolean, nullable=False, default=False)
 
 
+class PropertyRow(Base):
+    """Cadastro de propriedade. ``spec`` guarda o PropertyInfo validado (agrofleet.registry)."""
+    __tablename__ = "properties"
+    id = Column(String(64), primary_key=True)
+    origin = Column(String(16), nullable=False)
+    spec = Column(JSON, nullable=False)
+
+
+class MachineProfileRow(Base):
+    """Perfil (configuração) de máquina. ``spec`` guarda o MachineProfile validado. Não é telemetria."""
+    __tablename__ = "machine_profiles"
+    id = Column(String(64), primary_key=True)
+    origin = Column(String(16), nullable=False)
+    property_id = Column(String(64))
+    spec = Column(JSON, nullable=False)
+
+
+class OperationRow(Base):
+    """Operação/missão planejada. ``spec`` guarda o OperationPlan validado; colunas repetidas só para filtro."""
+    __tablename__ = "operations"
+    id = Column(String(64), primary_key=True)
+    origin = Column(String(16), nullable=False)
+    machine_id = Column(String(64), nullable=False, index=True)
+    field_id = Column(String(64), nullable=False)
+    status = Column(String(16), nullable=False)
+    start = Column(UTCDateTime, nullable=False)
+    spec = Column(JSON, nullable=False)
+
+
 class UploadRow(Base):
     __tablename__ = "uploads"
     id = Column(Integer, primary_key=True, autoincrement=True)

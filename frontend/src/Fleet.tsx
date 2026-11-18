@@ -39,12 +39,20 @@ export function FleetTab({ ctx }: { ctx: Ctx }) {
           {ctx.machines.map((m) => (
             <article key={m.machine_id + m.origin} className={`mcard ${sel === m.machine_id ? "sel" : ""}`} onClick={() => setSel(sel === m.machine_id ? null : m.machine_id)} data-testid={`machine-${m.machine_id}`}>
               <header><b>{m.machine_id}</b> <OriginBadge origin={m.origin} /></header>
+              {m.name && <div className="muted" data-testid={`machine-name-${m.machine_id}`}>{m.name} · {m.kind_label} · {m.energy_label}</div>}
               <div className="state" style={{ color: STATE_COLOR[m.state] }}>● {STATE_LABEL[m.state] ?? m.state}{m.live ? " · ao vivo" : " · histórico"}</div>
               <dl>
                 <dt>Velocidade</dt><dd>{fmt(msToKmh(m.speed_ms), 1, "km/h")}</dd>
+                {/* campos de motor/energia só aparecem se a máquina os reporta (nada é estimado aqui) */}
+                {m.engine_rpm != null && <><dt>Rotação</dt><dd>{fmt(m.engine_rpm, 0, "rpm")}</dd></>}
+                {m.engine_load_pct != null && <><dt>Carga do motor</dt><dd>{fmt(m.engine_load_pct, 0, "%")}</dd></>}
+                {m.fuel_level_pct != null && <><dt>Combustível</dt><dd>{fmt(m.fuel_level_pct, 1, "%")}</dd></>}
+                {m.fuel_rate_lph != null && <><dt>Consumo</dt><dd>{fmt(m.fuel_rate_lph, 1, "L/h")}</dd></>}
+                {m.battery_soc_pct != null && <><dt>Bateria</dt><dd>{fmt(m.battery_soc_pct, 1, "%")}{m.battery_energy_kwh != null ? ` (${fmt(m.battery_energy_kwh, 1, "kWh")})` : ""}</dd></>}
+                {m.battery_power_kw != null && <><dt>Potência</dt><dd>{fmt(m.battery_power_kw, 1, "kW")}</dd></>}
                 <dt>Vazão</dt><dd>{fmt(m.flow_lpm, 1, "L/min")}</dd>
                 <dt>Pressão</dt><dd>{fmt(m.pressure_bar, 2, "bar")}</dd>
-                <dt>Tanque</dt><dd>{fmt(m.tank_level_l, 0, "L")}</dd>
+                <dt>Tanque de calda</dt><dd>{fmt(m.tank_level_l, 0, "L")}</dd>
                 <dt>GNSS</dt><dd>{m.gnss_fix}{m.lat === null ? " (sem posição)" : ""}</dd>
                 <dt>Alertas</dt><dd>{m.alerts}</dd>
               </dl>

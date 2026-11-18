@@ -182,3 +182,21 @@ def test_migracao_aditiva_1_0_para_1_1_no_postgis():
         with admin.connect() as c:
             c.execute(text(f"DROP DATABASE IF EXISTS {name}"))
         admin.dispose()
+
+
+@pytest.mark.skipif(not PG, reason="AGROFLEET_TEST_PG_URL não definido")
+def test_cenarios_de_operacao_no_postgis():
+    """Etapa 2/3: cadastro em PostgreSQL e talhão irregular georreferenciado coerente com a telemetria (ST_Within)."""
+    st = Settings(database_url=PG, auth_secret=SECRET, users=USERS, mqtt_host=None)
+    with TestClient(create_app(st)) as c:
+        h = _login(c)
+        c.delete("/data", params={"origin": "simulated"}, headers=h)
+        r = c.post("/demo/operations/load", params={"scenarios": "A,B", "hours": 0.25}, headers=h).json()
+        assert r["stored"] == 2 * 901
+        assert {o["operation_id"] for o in c.get("/operations", headers=h).json()} == {"OP-SIM-A", "OP-SIM-B"}
+        chk = c.get("/postgis/check/SIM-TR-320", params={"field_id": "SIM-TALHAO-03"}, headers=h).json()
+        assert chk["field_area_m2_geography"] / 1e4 == pytest.approx(120.0, rel=3e-3)        # área elipsoidal vs. UTM do simulador
+        n_work = sum(1 for p in c.get("/machines/SIM-TR-320/telemetry", headers=h).json() if p["state"] == "working")
+        assert chk["points_within_field"] >= n_work > 300                                    # trabalho acontece dentro do talhão
+        d = c.delete("/data", params={"origin": "simulated"}, headers=h).json()
+        assert d["operations"] == 2 and d["machine_profiles"] == 2

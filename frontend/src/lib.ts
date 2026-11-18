@@ -71,8 +71,13 @@ export function trailUntil(s: Series, t: number): [number, number][][] {
 }
 
 export type WsMsg = { type: "hello" | "telemetry" | "alert"; [k: string]: unknown };
-export interface MachineRow { machine_id: string; origin: string; state: string; lat: number | null; lon: number | null; last_ts: string; live: boolean; alerts: number;
-  speed_ms: number | null; flow_lpm: number | null; pressure_bar: number | null; tank_level_l: number | null; gnss_fix: string; samples: number; field_id: string | null; operator_id: string | null }
+/** Campos de motor/energia do schema 1.1 (null = não reportado pela máquina). */
+export const ENGINE_ENERGY_KEYS = ["engine_rpm", "engine_load_pct", "engine_hours_h", "fuel_level_pct", "fuel_rate_lph",
+  "battery_soc_pct", "battery_energy_kwh", "battery_power_kw", "heading_deg"] as const;
+export type EngineEnergy = Partial<Record<(typeof ENGINE_ENERGY_KEYS)[number], number | null>>;
+export interface MachineRow extends EngineEnergy { machine_id: string; origin: string; state: string; lat: number | null; lon: number | null; last_ts: string; live: boolean; alerts: number;
+  speed_ms: number | null; flow_lpm: number | null; pressure_bar: number | null; tank_level_l: number | null; gnss_fix: string; samples: number; field_id: string | null; operator_id: string | null;
+  name?: string | null; kind_label?: string | null; energy_label?: string | null }
 
 /** Aplica uma mensagem 'telemetry' do WebSocket à lista de máquinas (sem inventar campos ausentes). */
 export function applyTelemetry(rows: MachineRow[], points: Partial<MachineRow & { ts: string }>[]): MachineRow[] {
@@ -81,6 +86,8 @@ export function applyTelemetry(rows: MachineRow[], points: Partial<MachineRow & 
     const i = out.findIndex((r) => r.machine_id === p.machine_id && r.origin === p.origin);
     const patch = { state: p.state, lat: p.lat, lon: p.lon, speed_ms: p.speed_ms, flow_lpm: p.flow_lpm, pressure_bar: p.pressure_bar,
       tank_level_l: p.tank_level_l, gnss_fix: p.gnss_fix, last_ts: p.ts, live: true } as Partial<MachineRow>;
+    // 1.1: só copia campos presentes na mensagem (um backend 1.0 não os envia; não apagamos o que já se sabe por isso)
+    for (const k of ENGINE_ENERGY_KEYS) if (k in p) patch[k] = p[k] ?? null;
     if (i >= 0) Object.assign(out[i], patch);
     else out.push({ machine_id: p.machine_id!, origin: p.origin!, samples: 1, alerts: 0, field_id: null, operator_id: null, ...patch } as MachineRow);
   }

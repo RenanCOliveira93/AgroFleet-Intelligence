@@ -211,6 +211,18 @@ Todo campo opcional ausente é `None`: não há preenchimento por padrão nem pe
 
 **Compatibilidade e migração (1.0 → 1.1).** Payloads 1.0 continuam válidos sem alteração (testado com os exemplos 1.0). O tópico continua `agrofleet/v1`. Como o modelo usa `extra="forbid"`, um backend 1.0 **rejeita** os campos novos: atualize o backend antes dos dispositivos. No banco, `init_db` executa `add_missing_columns`, uma migração **aditiva e idempotente**: só adiciona colunas anuláveis que faltam (`ALTER TABLE … ADD COLUMN`), nunca remove nem reescreve, e recusa com erro uma coluna nova não anulável. Foi testada em SQLite e no PostGIS real, preservando a coluna gerada `geom`.
 
+### 3.2.1 Cadastro (`agrofleet/registry.py`)
+
+O cadastro é **configuração informada por pessoas**, não telemetria. Fica nas tabelas `properties`, `machine_profiles` e `operations`; cada linha guarda o modelo validado em `spec` (JSON), o que deixa o cadastro evoluir sem migração.
+
+| Modelo | Campos principais | Regras |
+|---|---|---|
+| `PropertyInfo` | `property_id`, `name`, `timezone` (IANA, padrão `America/Sao_Paulo`) | o fuso serve só para exibir horários; o armazenamento é sempre UTC |
+| `MachineProfile` | `name`, `kind` (trator, pulverizador, colheitadeira, outro), `energy_source` (diesel, elétrico, não informado), `autonomous`, `fuel_tank_capacity_l` ou `battery_capacity_kwh`, `energy_reserve_pct`, `energy_warning_pct`, `energy_critical_pct`, `autonomy_margin_pct`, `maintenance_interval_h` + `last_maintenance_engine_h` | só a capacidade da fonte declarada; crítico < aviso; crítico ≥ reserva; manutenção exige os dois campos e não se aplica a máquina elétrica |
+| `OperationPlan` | `name`, `operation_type`, `machine_id`, `field_id`, `planned_area_ha` (vazio = área do talhão), `implement_width_m`, `start`/`end` (com fuso), `status` | máquina e talhão precisam existir; **operação, máquina e talhão com a mesma `origin`** |
+
+Campo não informado fica `None`, e o cálculo que depende dele é marcado como indisponível: não há limite nem capacidade padrão escondidos. `GET /machines` inclui `name`, `kind` e `energy_source` do perfil **somente** se o perfil tiver a mesma origem da telemetria.
+
 ### 3.3 Adaptadores tabulares (CSV/JSON)
 
 `agrofleet/adapters/tabular.py`:
@@ -254,6 +266,21 @@ Todo campo opcional ausente é `None`: não há preenchimento por padrão nem pe
 Modelo: passadas paralelas de comprimento L, velocidade ~N(v; 0,15 m/s) suavizada, vazão = taxa·v·w/600 + ruído, pressão base + ruído, fila de tarefas com reabastecimento, ruído GNSS de 2 cm (RTK fixed) e 0,35 m na reconvergência RTK-float. Total: 11 331 amostras em 4 máquinas.
 
 Não representa: vento, relevo, deriva, falhas reais de bico, comportamento real de bomba/válvula, controle de seção, multipath, cabeceiras irregulares, operadores. Qualquer afirmação de desempenho vale para o simulador.
+
+### 3.6.1 Simulador de operações (cenários A, B e C)
+
+`agrofleet/simulator/operations.py`. É um módulo novo, ao lado do simulador original, que continua intacto. Tudo é `origin = simulated`, inclusive o cadastro gerado (propriedade "Fazenda Santa Clara (simulada)", máquinas, talhões e operações). Os **modelos de energia são sintéticos e não calibrados**: servem para testar ingestão, cobertura, autonomia e alertas com verdade conhecida, nunca para estimar o desempenho de uma máquina real.
+
+| Cenário | Máquina | Talhão | O que exercita |
+|---|---|---|---|
+| A | `SIM-TR-320`, trator diesel, implemento de 12 m a 8,5 km/h | Talhão 03, 120 ha | consumo (L/h) variando com a carga do motor (resistência do solo + modo); nível de combustível com oscilação e resolução de 0,4%; horímetro; rumo. Completo em cerca de 12,3 h, consome cerca de 414 L de 570 L (autonomia suficiente) |
+| B | `SIM-PE-07`, pulverizador elétrico autônomo, 12 m a 7,2 km/h | Talhão 05, 40 ha | potência = base + tração (velocidade e massa de calda) + bomba; SOC e kWh; reabastecimento de calda. Ao atingir 12% de SOC, a máquina simulada volta à base e a operação fica incompleta (cerca de 62%): **autonomia insuficiente** |
+| C | `SIM-TR-410`, trator diesel | Talhão 04, 60 ha | falhas de **enlace** na entrega, sem alterar a medição: 90 s perdidos, 4 min guardados e reenviados em rajada, 5 min com 25 s de latência (chegam fora de ordem), 10 min com 5% de duplicação |
+
+- **Geometria:** talhão convexo irregular, determinístico pela semente e com área exata. As passadas são paralelas, recortadas ao polígono e percorridas em boustrophedon; as manobras são segmentos fora de trabalho. Não há cabeceira trabalhada, então o teto de cobertura é `planned_coverage_in_field_ha` (cerca de 99,6%).
+- **Verdade-terreno** (`truth`): combustível ou energia inicial e final, consumo médio em trabalho, passadas feitas, eventos (reabastecimento de calda, retorno à base, falhas de enlace) e conclusão.
+- **Uso:** `POST /demo/operations/load?scenarios=A,B,C&hours=3` grava cadastro e telemetria, terminando *agora*. Para um teste ao vivo por MQTT: `POST …&with_telemetry=false&start=<T>` e depois `python simulator/publish.py --scenario A,B,C --start <T> --speedup 20`.
+- **Verificado em teste** (`tests/test_simulator_operations.py`): a integral do consumo reportado bate com a verdade (±1% em L, ±2% em kWh); a queda do nível bate com o consumo (±0,5 p.p.); rumo coerente e ausente com a máquina parada; cada máquina só reporta os sensores do seu tipo; e a cobertura estimada fica entre −3% e +0,5% da planejada.
 
 ### 3.7 Verificação de qualidade (`agrofleet/quality.py`)
 
@@ -498,7 +525,8 @@ O reenvio do mesmo arquivo não duplica dados (`stored: 0`, `duplicates_ignored`
 | análise | `GET /metrics/{id}`, `/coverage`, `/reports` (`format=json\|csv`), `/postgis/check/{id}` |
 | alertas | `GET /alerts`, `POST /alerts/recompute`, `GET\|PUT /config/alerts` |
 | ingestão | `POST /uploads`, `GET /uploads`, `GET /ingest/rejects` |
-| demonstração | `POST /demo/load`, `GET /demo/evaluation`, `DELETE /data?origin=` |
+| cadastro | `GET /registry/properties`, `PUT /registry/properties/{id}` (admin); `GET /registry/machines`, `GET\|PUT /registry/machines/{id}` (PUT: admin); `GET /operations`, `GET\|PUT /operations/{id}` (PUT: analyst) |
+| demonstração | `POST /demo/load`, `POST /demo/operations/load` (cenários A/B/C), `GET /demo/evaluation`, `DELETE /data?origin=` (também apaga o cadastro dessa origem) |
 | ROI | `GET /roi/example`, `POST /roi`, `POST /roi/from-telemetry` |
 
 Parâmetros comuns: `origin` (`all|simulated|real|unknown`), `start`/`end` (ISO 8601 com fuso), `group_by` (`machine|property|field|operator`).
