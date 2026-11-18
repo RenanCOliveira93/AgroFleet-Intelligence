@@ -1,0 +1,5 @@
+machine,timestamp,lat,lon,speed_kmh,estado,rpm,carga_motor,horimetro,fuel_level,fuel_rate,soc,battery_energy,battery_power,heading
+TRATOR-EX-1,2026-05-01T12:00:00Z,-20.1,-45.1,7.5,trabalhando,1950,78,4821.6,0.62,6.71,,,,0.6545
+TRATOR-EX-1,2026-05-01T12:00:01Z,-20.10001,-45.09999,7.5,trabalhando,1955,79,4821.6,0.62,6.74,,,,0.6545
+PULV-EX-E1,2026-05-01T12:00:00Z,-20.2,-45.2,6.5,trabalhando,,,,,,0.54,21600,6400,3.1765
+PULV-EX-E1,2026-05-01T12:00:01Z,-20.20002,-45.2,6.5,trabalhando,,,,,,0.54,21590,-1200,3.1765

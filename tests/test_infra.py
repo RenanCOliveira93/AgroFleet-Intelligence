@@ -135,3 +135,50 @@ def test_ponta_a_ponta_mqtt_para_banco_alertas_e_websocket():
         assert {"gnss_loss", "fault_stop"} <= {a["type"] for a in al}          # eventos injetados nos primeiros 15 min
         assert len({a["id"] for a in al}) == len(al)                           # sem alerta duplicado por reavaliação em janela deslizante
         c.delete("/data", params={"origin": "simulated"}, headers=hadm)
+
+
+@pytest.mark.skipif(not PG, reason="AGROFLEET_TEST_PG_URL não definido")
+def test_migracao_aditiva_1_0_para_1_1_no_postgis():
+    """Banco criado no schema 1.0 (com a coluna gerada geom do PostGIS) recebe as colunas 1.1 sem perder dados.
+    Usa um banco descartável próprio para não interferir no banco dos outros testes."""
+    from datetime import datetime, timezone
+    from sqlalchemy import MetaData, Table, UniqueConstraint, create_engine, inspect, text
+    from sqlalchemy.engine import make_url
+    from agrofleet.schema import ENGINE_ENERGY_FIELDS, TelemetryPoint
+    from backend.app.db import TelemetryRow, add_missing_columns, init_db, insert_points, load_frame, sessionmaker_for
+    name = "agrofleet_migr_test"
+    admin = create_engine(PG, isolation_level="AUTOCOMMIT")
+    with admin.connect() as c:
+        c.execute(text(f"DROP DATABASE IF EXISTS {name}")); c.execute(text(f"CREATE DATABASE {name}"))
+    eng = create_engine(make_url(PG).set(database=name))
+    try:
+        new = set(ENGINE_ENERGY_FIELDS) | {"ingested_at"}
+        md = MetaData()
+        Table("telemetry", md, *[col._copy() for col in TelemetryRow.__table__.columns if col.name not in new],
+              UniqueConstraint("machine_id", "ts", "origin", name="uq_tel_machine_ts_origin"))
+        md.create_all(eng)
+        with eng.begin() as c:
+            c.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
+            c.execute(text("ALTER TABLE telemetry ADD COLUMN geom geometry(Point,4326) GENERATED ALWAYS AS "
+                           "(CASE WHEN lat IS NULL OR lon IS NULL THEN NULL ELSE ST_SetSRID(ST_MakePoint(lon, lat), 4326) END) STORED"))
+            c.execute(text("INSERT INTO telemetry (machine_id, ts, origin, state, gnss_fix, error_codes, sensor_quality, lat, lon) "
+                           "VALUES ('OLD-1', '2026-03-10T10:00:00Z', 'simulated', 'working', 'rtk_fixed', '[]', '{}', -16.7, -47.6)"))
+        init_db(eng)
+        cols = {c["name"]: c for c in inspect(eng).get_columns("telemetry")}
+        assert new <= set(cols) and "geom" in cols
+        assert cols["ingested_at"]["type"].timezone is True                     # timestamptz, como ts
+        assert add_missing_columns(eng) == {}
+        SF = sessionmaker_for(eng)
+        with SF() as s:
+            old = load_frame(s, ["OLD-1"])
+            assert len(old) == 1 and old[list(ENGINE_ENERGY_FIELDS)].isna().all(axis=None)
+            p = TelemetryPoint(machine_id="NEW-1", ts=datetime(2026, 5, 1, tzinfo=timezone.utc), origin="simulated",
+                               lat=-16.7, lon=-47.6, fuel_level_pct=55.0, heading_deg=90.0)
+            assert insert_points(s, [p]) == 1
+            assert load_frame(s, ["NEW-1"])["fuel_level_pct"].iloc[0] == 55.0
+            assert s.execute(text("SELECT count(*) FROM telemetry WHERE geom IS NOT NULL")).scalar() == 2   # coluna gerada intacta
+    finally:
+        eng.dispose()
+        with admin.connect() as c:
+            c.execute(text(f"DROP DATABASE IF EXISTS {name}"))
+        admin.dispose()

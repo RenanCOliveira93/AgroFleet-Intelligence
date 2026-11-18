@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.1",
+  "type": "telemetry",
+  "message_id": "TRATOR-EX-1-000001",
+  "sent_at": "2026-05-01T12:00:01+00:00",
+  "data": {
+    "machine_id": "TRATOR-EX-1",
+    "ts": "2026-05-01T12:00:00+00:00",
+    "origin": "simulated",
+    "lat": -20.1,
+    "lon": -45.1,
+    "speed_ms": 2.08,
+    "heading_deg": 37.5,
+    "state": "working",
+    "gnss_fix": "rtk_fixed",
+    "accuracy_m": 0.03,
+    "working_width_m": 6.0,
+    "engine_rpm": 1950.0,
+    "engine_load_pct": 78.0,
+    "engine_hours_h": 4821.6,
+    "fuel_level_pct": 62.0,
+    "fuel_rate_lph": 25.4,
+    "error_codes": [],
+    "sensor_quality": {"gnss": "ok", "engine": "ok", "fuel_level": "ok", "fuel_rate": "ok", "heading": "ok"},
+    "field_id": "TALHAO-EX-03"
+  }
+}

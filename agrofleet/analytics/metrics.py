@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from ..geo import Projector, ha
+from ..schema import ENGINE_ENERGY_FIELDS
 from .coverage import CoverageConfig, build_segments, coverage_from_segments
 from .frame import median_dt_s
 
@@ -98,7 +99,8 @@ def machine_metrics(g: pd.DataFrame, cfg: MetricsConfig | None = None, cov: Cove
     out["position_missing_pct"] = float(100 * (~pos).mean())
     out["accuracy_m_median"] = float(g["accuracy_m"].median()) if g["accuracy_m"].notna().any() else None
     out["null_pct"] = {c: float(100 * g[c].isna().mean()) for c in
-                       ["speed_ms", "flow_lpm", "pressure_bar", "tank_level_l", "working_width_m", "application_rate_lha"]}
+                       ["speed_ms", "flow_lpm", "pressure_bar", "tank_level_l", "working_width_m", "application_rate_lha",
+                        *ENGINE_ENERGY_FIELDS]}
     codes = sorted({c for lst in g["error_codes"] for c in (lst or [])})
     out["error_codes"] = codes
 

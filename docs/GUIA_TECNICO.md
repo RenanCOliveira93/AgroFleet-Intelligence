@@ -169,7 +169,7 @@ Nenhum conjunto de dados público ou privado de máquina real foi baixado ou usa
 
 ### 3.2 Modelo canônico (`TelemetryPoint`)
 
-Definido em `agrofleet/schema.py` (pydantic v2, `extra="forbid"`). Unidades fixas: **m/s, bar, L/min, L, m, L/ha**. Conversões acontecem nos adaptadores, nunca no núcleo.
+Definido em `agrofleet/schema.py` (pydantic v2, `extra="forbid"`), versão **1.1**. Unidades fixas: **m/s, bar, L/min, L, m, L/ha** e, desde a 1.1, **rpm, %, h, L/h, kWh, kW, graus**. Conversões acontecem nos adaptadores, nunca no núcleo.
 
 | Campo | Tipo | Regra |
 |---|---|---|
@@ -186,10 +186,30 @@ Definido em `agrofleet/schema.py` (pydantic v2, `extra="forbid"`). Unidades fixa
 | `working_width_m` | > 0 | |
 | `application_rate_lha` | >= 0 | taxa reportada pelo controlador |
 | `error_codes` | lista de str | |
-| `sensor_quality` | `{gnss,speed,flow,pressure,tank_level}` para `ok/degraded/failed/unknown` | chave desconhecida é rejeitada |
+| `sensor_quality` | `{gnss,speed,flow,pressure,tank_level,engine,fuel_level,fuel_rate,battery,heading}` para `ok/degraded/failed/unknown` | chave desconhecida é rejeitada; as 5 últimas chaves são da 1.1 |
 | `property_id`, `field_id`, `operator_id` | str | nunca inferidos |
 
+**Campos 1.1 — motor e energia** (todos opcionais; lista única em `schema.ENGINE_ENERGY_FIELDS`). A referência indica de onde um dispositivo futuro poderia ler o valor; a disponibilidade varia por fabricante e **não foi validada com máquina real**.
+
+| Campo | Unidade | Faixa aceita | Referência típica |
+|---|---|---|---|
+| `engine_rpm` | rpm | >= 0 | J1939 SPN 190 (Engine Speed) |
+| `engine_load_pct` | % | 0-250 | J1939 SPN 92 (Percent Load At Current Speed) |
+| `engine_hours_h` | h | >= 0 | J1939 SPN 247 (Engine Total Hours), horímetro acumulado |
+| `fuel_level_pct` | % | 0-100 | J1939 SPN 96 (Fuel Level 1) |
+| `fuel_rate_lph` | L/h | >= 0 | J1939 SPN 183 (Engine Fuel Rate) |
+| `battery_soc_pct` | % | 0-100 | BMS: estado de carga |
+| `battery_energy_kwh` | kWh | >= 0 | BMS: energia remanescente disponível |
+| `battery_power_kw` | kW | qualquer valor finito | BMS: **+ descarga**, **− recarga/regeneração** |
+| `heading_deg` | graus | [0, 360) | GNSS: rumo verdadeiro sobre o solo (COG) |
+
+- `tank_level_l` continua sendo o **tanque de calda** (produto). Combustível só aparece em `fuel_level_pct`. Os **litros** de combustível dependem da capacidade do tanque, que é cadastro da máquina e não telemetria; não existe campo `fuel_level_l`.
+- Uma máquina a combustão envia os campos de motor e combustível; uma elétrica envia os de bateria. O que a máquina não envia fica `None`: o sistema não deduz uma fonte de energia a partir da outra.
+- Na coluna `telemetry.ingested_at`, o servidor grava o horário de gravação, que **não** é o `ts` reportado pela máquina. É a base para detectar telemetria atrasada ou desconectada sem depender do relógio do dispositivo (nem do relógio simulado de `publish.py --speedup`). Linhas gravadas antes da 1.1 ficam com `NULL`.
+
 Todo campo opcional ausente é `None`: não há preenchimento por padrão nem pelo último valor.
+
+**Compatibilidade e migração (1.0 → 1.1).** Payloads 1.0 continuam válidos sem alteração (testado com os exemplos 1.0). O tópico continua `agrofleet/v1`. Como o modelo usa `extra="forbid"`, um backend 1.0 **rejeita** os campos novos: atualize o backend antes dos dispositivos. No banco, `init_db` executa `add_missing_columns`, uma migração **aditiva e idempotente**: só adiciona colunas anuláveis que faltam (`ALTER TABLE … ADD COLUMN`), nunca remove nem reescreve, e recusa com erro uma coluna nova não anulável. Foi testada em SQLite e no PostGIS real, preservando a coluna gerada `geom`.
 
 ### 3.3 Adaptadores tabulares (CSV/JSON)
 
@@ -197,6 +217,8 @@ Todo campo opcional ausente é `None`: não há preenchimento por padrão nem pe
 
 - **Aliases de coluna** (`machine`, `timestamp`, `velocidade`, `vazao`, ...); o mapeamento efetivo e as colunas ignoradas voltam em `meta` (`columns_mapped`, `columns_ignored`).
 - **Unidades**: km/h, mph, kn, kPa, MPa, psi, L/s, L/h, m³, cm, ft. A unidade é declarada em `units=` ou deduzida do nome da coluna (`speed_kmh`), o que gera aviso. Unidade desconhecida é erro.
+- **Unidades 1.1** (chave de `units=`: unidades aceitas): `engine_hours`: h, min, s; `fuel_level` e `battery_soc`: %, fraction (0-1); `fuel_rate`: L/h, L/min, gal/h (galão americano); `battery_energy`: kWh, Wh; `battery_power`: kW, W; `heading`: deg, rad. Aliases de coluna incluem `rpm`, `carga_motor`, `horimetro`, `nivel_combustivel`, `soc`, `rumo` e `cog`.
+- **Suspeita de unidade (só sinalizada, nunca corrigida)**: nível de combustível ou SOC sempre ≤ 1 % (fração 0-1 enviada como %?), rotação > 5000 rpm, consumo mediano > 150 L/h, energia de bateria mediana > 2000 kWh.
 - **Fuso**: timestamp sem fuso é rejeitado, a menos que `assume_tz` seja informado (por exemplo `America/Sao_Paulo`). Errar o fuso desloca todos os horários em silêncio; confirme com o fornecedor.
 - **Estado**: vocabulário PT/EN (`trabalhando`, `spraying`...); valor não reconhecido vira `unknown` e é contado em aviso (`state_map=` permite mapear).
 - **Valores vazios** (`""`, `NA`, `null`, `-`) viram `None`.
@@ -215,7 +237,7 @@ Todo campo opcional ausente é `None`: não há preenchimento por padrão nem pe
 
 - Tópico: `agrofleet/v1/<machine_id>/telemetry`; `data.machine_id` deve ser igual ao do tópico.
 - Envelope: `{schema_version, type:"telemetry", message_id, sent_at, data:{...TelemetryPoint}}`.
-- `schema_version` com major diferente de 1 é rejeitado; `1.x` é aceito.
+- `schema_version` com major diferente de 1 é rejeitado; `1.x` é aceito. O backend emite `1.1`. O minor é informativo: um envelope que declara `1.0` mas traz um campo 1.1 válido é aceito.
 - Campo desconhecido gera rejeição, registrada em `GET /ingest/rejects` (500 mais recentes).
 
 ### 3.6 Simulador (origem simulada)

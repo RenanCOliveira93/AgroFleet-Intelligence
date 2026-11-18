@@ -10,9 +10,10 @@ import pandas as pd
 from .adapters.base import AdapterResult
 from .analytics.frame import median_dt_s, to_frame
 from .geo import Projector
+from .schema import ENGINE_ENERGY_FIELDS
 
 FIELDS = ["lat", "lon", "speed_ms", "flow_lpm", "pressure_bar", "tank_level_l", "consumption_l", "working_width_m",
-          "application_rate_lha", "accuracy_m"]
+          "application_rate_lha", "accuracy_m", *ENGINE_ENERGY_FIELDS]
 
 
 def assess(res: AdapterResult, *, max_gap_s: float = 30.0, max_speed_ms: float = 25.0, max_jump_ms: float = 40.0,
@@ -85,6 +86,17 @@ def assess(res: AdapterResult, *, max_gap_s: float = 30.0, max_speed_ms: float =
         sus.append(f"vazão mediana {df['flow_lpm'].median():.0f} L/min é muito alta (L/h?)")
     if df["working_width_m"].max() > 60:
         sus.append(f"largura de trabalho {df['working_width_m'].max():.0f} m é incomum (cm/ft?)")
+    # 1.1 — limites largos de plausibilidade (suspeita de unidade, não validação de máquina específica)
+    if df["engine_rpm"].max() > 5000:
+        sus.append(f"rotação máxima {df['engine_rpm'].max():.0f} rpm é incomum para motor agrícola (rad/s ou Hz?)")
+    if df["fuel_rate_lph"].median() > 150:
+        sus.append(f"consumo mediano {df['fuel_rate_lph'].median():.0f} L/h é muito alto (mL/h ou L/min×60?)")
+    for col, unit_key, nome in (("fuel_level_pct", "fuel_level", "nível de combustível"), ("battery_soc_pct", "battery_soc", "estado de carga")):
+        v = df[col].dropna()
+        if len(v) >= 2 and v.max() <= 1.0:
+            sus.append(f"{nome} sempre ≤ 1 %: fração 0–1 enviada como %? (declare units={{'{unit_key}': 'fraction'}})")
+    if df["battery_energy_kwh"].median() > 2000:
+        sus.append(f"energia de bateria mediana {df['battery_energy_kwh'].median():.0f} kWh é muito alta (Wh?)")
     for s in sus:
         flags.append({"level": "warn", "code": "unit_suspect", "msg": s})
     c = df.dropna(subset=["consumption_l"])

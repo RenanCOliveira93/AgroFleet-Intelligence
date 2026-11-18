@@ -4,9 +4,16 @@ Regras de projeto:
 - Todo campo opcional é ``None`` quando ausente. NUNCA é preenchido com valor fictício (nem 0, nem último valor).
 - Tempo sempre em UTC com fuso explícito. Timestamp "ingênuo" é rejeitado pelo modelo; o adaptador decide
   (e documenta) o fuso quando a fonte não informa.
-- Unidades SI-derivadas e fixas: m/s, bar, L/min, L, m, L/ha. Conversões acontecem nos adaptadores.
+- Unidades SI-derivadas e fixas: m/s, bar, L/min, L, m, L/ha; e (v1.1) rpm, %, h, L/h, kWh, kW, graus.
+  Conversões acontecem nos adaptadores.
 - ``origin`` separa dado simulado de dado real em toda a pilha (banco, API, interface).
 - Nada aqui descreve comando de controle: o modelo só descreve o que a máquina REPORTOU.
+
+Histórico do schema (mesmo major => mesmo tópico ``agrofleet/v1``):
+- 1.0: posição, estado, GNSS, pulverização (vazão, pressão, tanque de calda, largura, taxa), erros, qualidade.
+- 1.1: campos OPCIONAIS de motor e energia (``ENGINE_ENERGY_FIELDS``). Payload 1.0 continua válido sem mudança.
+  Atenção: ``tank_level_l`` é o tanque de CALDA (produto), não combustível. Combustível só em ``fuel_level_pct``;
+  litros de combustível dependem da capacidade do tanque, que é cadastro da máquina (não telemetria).
 """
 from __future__ import annotations
 
@@ -17,7 +24,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 
 class State(str, Enum):
@@ -46,8 +53,23 @@ class SensorQ(str, Enum):
     unknown = "unknown"
 
 
-SENSORS = ("gnss", "speed", "flow", "pressure", "tank_level")
+SENSORS = ("gnss", "speed", "flow", "pressure", "tank_level",
+           "engine", "fuel_level", "fuel_rate", "battery", "heading")   # 1.1: motor/energia/rumo
 Origin = Literal["simulated", "real", "unknown"]
+
+# Campos 1.1 (motor e energia). Unidade canônica e referência de origem típica. As referências J1939 indicam de onde
+# um dispositivo futuro poderia ler o valor; a disponibilidade varia por fabricante e NÃO foi validada com máquina real.
+ENGINE_ENERGY_FIELDS: dict[str, dict] = {
+    "engine_rpm":         {"unit": "rpm", "range": (0, None), "ref": "J1939 SPN 190 (Engine Speed)"},
+    "engine_load_pct":    {"unit": "%", "range": (0, 250), "ref": "J1939 SPN 92 (Percent Load At Current Speed; faixa 0-250%)"},
+    "engine_hours_h":     {"unit": "h", "range": (0, None), "ref": "J1939 SPN 247 (Engine Total Hours); horímetro acumulado"},
+    "fuel_level_pct":     {"unit": "%", "range": (0, 100), "ref": "J1939 SPN 96 (Fuel Level 1)"},
+    "fuel_rate_lph":      {"unit": "L/h", "range": (0, None), "ref": "J1939 SPN 183 (Engine Fuel Rate)"},
+    "battery_soc_pct":    {"unit": "%", "range": (0, 100), "ref": "BMS: estado de carga"},
+    "battery_energy_kwh": {"unit": "kWh", "range": (0, None), "ref": "BMS: energia remanescente disponível"},
+    "battery_power_kw":   {"unit": "kW", "range": (None, None), "ref": "BMS: potência na bateria (+ descarga, - recarga/regeneração)"},
+    "heading_deg":        {"unit": "°", "range": (0, 360), "ref": "GNSS: rumo verdadeiro sobre o solo (COG), [0, 360)"},
+}
 
 
 class TelemetryPoint(BaseModel):
@@ -75,6 +97,17 @@ class TelemetryPoint(BaseModel):
     error_codes: list[str] = Field(default_factory=list)
     sensor_quality: dict[str, SensorQ] = Field(default_factory=dict)
 
+    # 1.1 — motor e energia (ver ENGINE_ENERGY_FIELDS). Ausente = None; nunca estimado pelo sistema.
+    engine_rpm: float | None = Field(default=None, ge=0)
+    engine_load_pct: float | None = Field(default=None, ge=0, le=250)
+    engine_hours_h: float | None = Field(default=None, ge=0)
+    fuel_level_pct: float | None = Field(default=None, ge=0, le=100)
+    fuel_rate_lph: float | None = Field(default=None, ge=0)
+    battery_soc_pct: float | None = Field(default=None, ge=0, le=100)
+    battery_energy_kwh: float | None = Field(default=None, ge=0)
+    battery_power_kw: float | None = None
+    heading_deg: float | None = Field(default=None, ge=0, lt=360)
+
     # metadados opcionais para relatórios (nunca inferidos pelo sistema)
     property_id: str | None = None
     field_id: str | None = None
@@ -88,7 +121,7 @@ class TelemetryPoint(BaseModel):
         return v.astimezone(timezone.utc)
 
     @field_validator("lat", "lon", "speed_ms", "accuracy_m", "flow_lpm", "pressure_bar", "tank_level_l",
-                     "consumption_l", "working_width_m", "application_rate_lha")
+                     "consumption_l", "working_width_m", "application_rate_lha", *ENGINE_ENERGY_FIELDS)
     @classmethod
     def _finite(cls, v: float | None) -> float | None:
         if v is not None and not math.isfinite(v):

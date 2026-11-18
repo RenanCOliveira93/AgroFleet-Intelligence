@@ -29,7 +29,7 @@ from agrofleet.analytics import roi as R
 from agrofleet.analytics.coverage import CoverageConfig, coverage
 from agrofleet.analytics.metrics import filter_period, machine_metrics, report
 from agrofleet.quality import assess
-from agrofleet.schema import SCHEMA_VERSION
+from agrofleet.schema import ENGINE_ENERGY_FIELDS, SCHEMA_VERSION
 from agrofleet.simulator.fleet import simulate
 
 from .auth import ROLES, Tokens, hash_password, verify_password
@@ -194,7 +194,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             out.append({"machine_id": mid, "origin": org, "samples": n, "last_ts": mx.isoformat(), "live": live.is_live(mid, st.live_window_s),
                         "state": last.state, "gnss_fix": last.gnss_fix, "lat": last.lat, "lon": last.lon, "speed_ms": last.speed_ms,
                         "flow_lpm": last.flow_lpm, "pressure_bar": last.pressure_bar, "tank_level_l": last.tank_level_l,
-                        "field_id": last.field_id, "operator_id": last.operator_id, "alerts": nal})
+                        "field_id": last.field_id, "operator_id": last.operator_id, "alerts": nal,
+                        **{f: getattr(last, f) for f in ENGINE_ENERGY_FIELDS},
+                        "ingested_at": last.ingested_at.isoformat() if last.ingested_at else None})
         return sorted(out, key=lambda r: (r["machine_id"], r["origin"]))
 
     @app.get("/machines/{machine_id}/telemetry", tags=["fleet"])

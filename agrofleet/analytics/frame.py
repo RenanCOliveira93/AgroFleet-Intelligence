@@ -6,10 +6,10 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-from ..schema import SENSORS, TelemetryPoint
+from ..schema import ENGINE_ENERGY_FIELDS, SENSORS, TelemetryPoint
 
 NUM = ["lat", "lon", "speed_ms", "accuracy_m", "flow_lpm", "pressure_bar", "tank_level_l", "consumption_l",
-       "working_width_m", "application_rate_lha"]
+       "working_width_m", "application_rate_lha", *ENGINE_ENERGY_FIELDS]
 COLS = ["machine_id", "ts", "origin", *NUM, "state", "gnss_fix", "error_codes", "property_id", "field_id", "operator_id",
         *[f"q_{s}" for s in SENSORS]]
 

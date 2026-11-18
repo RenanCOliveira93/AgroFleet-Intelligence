@@ -10,6 +10,7 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from agrofleet.analytics.frame import COLS, normalize
+from agrofleet.schema import SENSORS
 
 
 class UTCDateTime(TypeDecorator):
@@ -49,7 +50,15 @@ class TelemetryRow(Base):
     error_codes = Column(JSON, nullable=False, default=list)
     sensor_quality = Column(JSON, nullable=False, default=dict)
     property_id = Column(String(64)); field_id = Column(String(64)); operator_id = Column(String(64))
+    # schema 1.1 — motor e energia (todos opcionais; NULL = não reportado)
+    engine_rpm = Column(Float); engine_load_pct = Column(Float); engine_hours_h = Column(Float)
+    fuel_level_pct = Column(Float); fuel_rate_lph = Column(Float)
+    battery_soc_pct = Column(Float); battery_energy_kwh = Column(Float); battery_power_kw = Column(Float)
+    heading_deg = Column(Float)
     upload_id = Column(Integer)
+    # horário em que o SERVIDOR gravou a amostra (≠ ts, que é o horário reportado pela máquina). NULL em linhas
+    # gravadas antes desta coluna existir. Base para detectar telemetria atrasada/desconectada sem confiar no relógio do dado.
+    ingested_at = Column(UTCDateTime)
     __table_args__ = (UniqueConstraint("machine_id", "ts", "origin", name="uq_tel_machine_ts_origin"),
                       Index("ix_tel_machine_ts", "machine_id", "ts"), Index("ix_tel_ts", "ts"))
 
@@ -131,9 +140,40 @@ def wait_for_db(engine, timeout_s: float = 90.0):
     raise RuntimeError(f"banco indisponível após {timeout_s:.0f}s: {last}")
 
 
+def add_missing_columns(engine) -> dict[str, list[str]]:
+    """Migração ADITIVA e idempotente: cria colunas do modelo que faltam em tabelas já existentes.
+
+    ``create_all`` só cria tabelas novas; um banco criado com o schema 1.0 não ganharia as colunas 1.1. Aqui só se
+    ADICIONA coluna anulável sem default (nada é removido, renomeado ou reescrito); linhas antigas ficam com NULL,
+    que significa "não reportado" — nunca um valor inventado. Coluna não anulável nova é recusada com erro explícito.
+    """
+    import warnings
+    from sqlalchemy import exc, inspect
+    insp = inspect(engine)
+    existing_tables = set(insp.get_table_names())
+    added: dict[str, list[str]] = {}
+    with engine.begin() as c:
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue
+            with warnings.catch_warnings():   # a coluna PostGIS 'geom' não tem tipo SQLAlchemy; só o nome importa aqui
+                warnings.filterwarnings("ignore", message="Did not recognize type 'geometry'", category=exc.SAWarning)
+                have = {col["name"] for col in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name in have:
+                    continue
+                if not col.nullable or col.default is not None or col.server_default is not None or col.primary_key:
+                    raise RuntimeError(f"migração automática recusada: {table.name}.{col.name} não é anulável/sem default")
+                ddl = col.type.compile(dialect=engine.dialect)
+                c.execute(text(f'ALTER TABLE {table.name} ADD COLUMN {col.name} {ddl}'))
+                added.setdefault(table.name, []).append(col.name)
+    return added
+
+
 def init_db(engine):
     wait_for_db(engine)
     Base.metadata.create_all(engine)
+    add_missing_columns(engine)
     if engine.dialect.name == "postgresql":
         with engine.begin() as c:
             c.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
@@ -162,11 +202,13 @@ def insert_points(session: Session, points, upload_id: int | None = None) -> int
     ins = (postgresql if is_pg(session) else sqlite).insert
     n = 0
     rows = []
+    now = datetime.now(timezone.utc)
     for p in points:
         d = p.model_dump(mode="python")
         d["state"] = p.state.value; d["gnss_fix"] = p.gnss_fix.value
         d["sensor_quality"] = {k: v.value for k, v in p.sensor_quality.items()}
         d["upload_id"] = upload_id
+        d["ingested_at"] = now
         rows.append(d)
     for i in range(0, len(rows), 400):
         stmt = ins(TelemetryRow).values(rows[i:i + 400]).on_conflict_do_nothing(index_elements=["machine_id", "ts", "origin"])
@@ -192,7 +234,7 @@ def load_frame(session: Session, machine_ids=None, start=None, end=None, origin:
     if df.empty:
         return normalize(pd.DataFrame(columns=COLS))
     sq = df["sensor_quality"].apply(lambda d: d or {})
-    for s in ("gnss", "speed", "flow", "pressure", "tank_level"):
+    for s in SENSORS:
         df[f"q_{s}"] = sq.apply(lambda d, s=s: d.get(s))
     df["error_codes"] = df["error_codes"].apply(lambda v: v or [])
     return normalize(df)
