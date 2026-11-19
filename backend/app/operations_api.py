@@ -64,43 +64,63 @@ def _val(v):
     return v
 
 
+STALE_AFTER_S = 300.0
+
+
+def load_context(s, operation_id: str, as_of: datetime | None, live, settings):
+    """Carrega operação, cadastro, talhão e telemetria e decide o instante e a idade do dado (ver docstring do módulo)."""
+    op = get_operation(s, operation_id)
+    if not op:
+        raise HTTPException(404, "operação não cadastrada")
+    prof = get_machine(s, op.machine_id)
+    if prof is not None and prof.origin != op.origin:
+        prof = None                                   # cadastro de outra origem nunca é usado
+    fld = s.get(FieldRow, op.field_id)
+    fld_geo = fld.geojson if fld is not None and fld.origin == op.origin else None
+    as_of = _utc(as_of)
+    end = op.end if op.end is not None else None
+    if as_of is not None:
+        end = min(end, as_of) if end is not None else as_of
+    df = load_frame(s, [op.machine_id], op.start, end, op.origin)
+    now = datetime.now(timezone.utc)
+    if as_of is None:
+        q = select(func.max(TelemetryRow.ingested_at)).where(TelemetryRow.machine_id == op.machine_id,
+                                                             TelemetryRow.origin == op.origin)
+        last_ing = s.execute(q).scalar()
+        last_ing = _utc(last_ing) if last_ing is not None else None
+        # idade = max(atraso do enlace, idade do dado): carga histórica recém-importada não parece "ao vivo", e
+        # relógio do dispositivo adiantado (ts no futuro) não esconde um enlace parado
+        link_age = (now - last_ing).total_seconds() if last_ing is not None else None
+        data_age = max((now - df["ts"].iloc[-1].to_pydatetime()).total_seconds(), 0.0) if len(df) else None
+        ages = [a for a in (link_age, data_age) if a is not None]
+        age = max(max(ages), 0.0) if ages else None
+        live_now = live.is_live(op.machine_id, settings.live_window_s) and (data_age is None or data_age <= STALE_AFTER_S)
+        basis = "max(ingested_at, ts)" if last_ing is not None else "ts"
+    else:
+        last_ing = None
+        age = max((as_of - df["ts"].iloc[-1].to_pydatetime()).total_seconds(), 0.0) if len(df) else None
+        live_now, basis = False, "as_of"
+    return op, prof, fld, fld_geo, df, now, as_of, age, last_ing, live_now, basis
+
+
+def _active_alerts(s, op, df) -> list[dict]:
+    """Alertas ativos da máquina (operacionais e de evento), por prioridade: crítico, aviso, informativo; recentes antes."""
+    from .db import AlertRow
+    from .op_alerts_service import alert_dict, priority_key
+    last = {(op.machine_id, op.origin): df["ts"].iloc[-1].to_pydatetime()} if len(df) else {}
+    rows = s.execute(select(AlertRow).where(AlertRow.machine_id == op.machine_id, AlertRow.origin == op.origin)
+                     .order_by(AlertRow.end.desc()).limit(500)).scalars()
+    out = [a for a in (alert_dict(r, last) for r in rows) if a["status"] == "active"]
+    return sorted(out, key=priority_key)
+
+
 def build_operations_router(session, viewer, live, settings, clean) -> APIRouter:
     r = APIRouter(tags=["operations"])
-    stale_after_s = 300.0
+    stale_after_s = STALE_AFTER_S
 
-    def _load(s, operation_id: str, as_of: datetime | None):
-        op = get_operation(s, operation_id)
-        if not op:
-            raise HTTPException(404, "operação não cadastrada")
-        prof = get_machine(s, op.machine_id)
-        if prof is not None and prof.origin != op.origin:
-            prof = None                                   # cadastro de outra origem nunca é usado
-        fld = s.get(FieldRow, op.field_id)
-        fld_geo = fld.geojson if fld is not None and fld.origin == op.origin else None
-        as_of = _utc(as_of)
-        end = op.end if op.end is not None else None
-        if as_of is not None:
-            end = min(end, as_of) if end is not None else as_of
-        df = load_frame(s, [op.machine_id], op.start, end, op.origin)
-        now = datetime.now(timezone.utc)
-        if as_of is None:
-            q = select(func.max(TelemetryRow.ingested_at)).where(TelemetryRow.machine_id == op.machine_id,
-                                                                 TelemetryRow.origin == op.origin)
-            last_ing = s.execute(q).scalar()
-            last_ing = _utc(last_ing) if last_ing is not None else None
-            # idade = max(atraso do enlace, idade do dado): carga histórica recém-importada não parece "ao vivo", e
-            # relógio do dispositivo adiantado (ts no futuro) não esconde um enlace parado
-            link_age = (now - last_ing).total_seconds() if last_ing is not None else None
-            data_age = max((now - df["ts"].iloc[-1].to_pydatetime()).total_seconds(), 0.0) if len(df) else None
-            ages = [a for a in (link_age, data_age) if a is not None]
-            age = max(max(ages), 0.0) if ages else None
-            live_now = live.is_live(op.machine_id, settings.live_window_s) and (data_age is None or data_age <= stale_after_s)
-            basis = "max(ingested_at, ts)" if last_ing is not None else "ts"
-        else:
-            last_ing = None
-            age = max((as_of - df["ts"].iloc[-1].to_pydatetime()).total_seconds(), 0.0) if len(df) else None
-            live_now, basis = False, "as_of"
-        return op, prof, fld, fld_geo, df, now, as_of, age, last_ing, live_now, basis
+    def _load(s, operation_id, as_of):
+        return load_context(s, operation_id, as_of, live, settings)
+
 
     @r.get("/operations/{operation_id}/status")
     def operation_status(operation_id: str, as_of: datetime | None = Query(None, description="avaliar como neste instante (UTC)"),
@@ -133,6 +153,7 @@ def build_operations_router(session, viewer, live, settings, clean) -> APIRouter
             "autonomy_unavailable": None if a else "Máquina sem cadastro da mesma origem: autonomia não calculada.",
             "series": series,
             "n_samples": int(len(df)),
+            "alerts": _active_alerts(s, op, df),
         })
 
     @r.get("/operations/{operation_id}/geometry")

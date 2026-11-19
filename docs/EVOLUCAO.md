@@ -155,3 +155,49 @@ Executadas juntas, a pedido. A interface recebeu apenas uma adição mínima (no
 - A ETA mira 100% da área planejada; quando a cabeceira não é trabalhada, a operação termina um pouco antes (A: 99,6%).
 - O status recalcula tudo a cada chamada (1,2 s em 3 h; 7,6 s em 12 h). O cache incremental é da Etapa 6.
 - As saídas gravadas no notebook 02 ainda mostram os números de cobertura anteriores; serão regeneradas na Etapa 9.
+
+## Etapa 5 — Alertas operacionais ✅
+
+**Objetivo.** Alertas de energia, risco de não conclusão, manutenção e perda de conexão com ciclo de vida, deduplicação, histerese e critérios de qualidade dos dados, conforme a decisão C. As regras de evento existentes (`anomalies.py`) não mudam.
+
+**Alterações**
+
+| Arquivo | Mudança |
+|---|---|
+| `agrofleet/analytics/op_alerts.py` | Máquina de estados pura: quatro famílias, uma ativa por máquina, confirmação por severidade, histerese de saída, congelamento com dado ruim, portões do `critical`; `snapshot_from_data` monta as entradas com os cálculos da Etapa 4. |
+| `backend/app/op_alerts_service.py` | Estado persistido em `settings`; transições gravadas em `alerts`; `evaluate`, `replay` e `watchdog`; formato único de alerta (eventos antigos ganham `category` e `status` derivados). |
+| `backend/app/live.py` | Avaliação operacional no laço ao vivo (no máximo a cada 30 s por máquina) e vigia de conexão a cada 30 s, mesmo sem mensagens. |
+| `backend/app/main.py` | `/alerts` com filtros e `sort=priority` (aditivo; ordem padrão mantida); `GET\|PUT /config/alerts/operational`; `POST /operations/{id}/alerts/replay`; recálculo e demo reabrem os alertas sustentados; recálculo de eventos não apaga operacionais; `DELETE /data` limpa o estado. |
+| `backend/app/operations_api.py` | `load_context` extraído para reúso; `/status` inclui os alertas ativos da máquina por prioridade. |
+| `backend/app/db.py` | Colunas aditivas em `alerts`: `category`, `status`, `operation_id`, `resolved_at`, `history` (migração automática; linhas antigas continuam válidas). |
+| `frontend/src/Alerts.tsx`, `styles.css` | Adição mínima: rótulos das famílias novas, coluna Situação (severidade + ativo/resolvido), marca vermelha e nota do `critical`, ordem por prioridade. |
+| `tests/test_op_alerts.py` | 30 testes. |
+| `tests/test_infra.py` | Migração das colunas novas de `alerts` e alertas operacionais + vigia no PostgreSQL real. |
+| `docs/GUIA_TECNICO.md` | 2.2, 5.4, 5.5, 7.6, 7.10 (novo) e 9.4. |
+
+**Decisões técnicas**
+- **Camada nova em vez de mudar as regras de evento.** Eventos (início e fim numa janela) e condições com estado (ativo até resolver) têm semânticas diferentes; misturá-las mudaria alertas e testes existentes. Ambas usam a mesma tabela e a mesma rota, com `category`.
+- **Uma família, várias severidades.** Nível de energia é um alerta só, que sobe de aviso para crítico e desce com histerese, em vez de dois alertas simultâneos para a mesma causa. O mesmo vale para a autonomia.
+- **Confirmação por severidade.** Um `critical` precisa da própria confirmação: não nasce de um instante nem herda o tempo de um aviso anterior.
+- **Dado ruim congela, não resolve.** Sem leitura confiável, o estado anterior fica como está e é marcado como indeterminado; perder a visão da máquina não é o mesmo que o problema ter passado.
+- **`critical` de autonomia com portões.** Exige taxa de sensor, fontes concordantes e janela sem lacunas; sem isso o alerta fica em aviso e diz por quê.
+- **Manutenção só por regra cadastrada.** Sem intervalo e horímetro de referência no cadastro, a regra é pulada e relatada. O aviso prévio é opcional e desligado por padrão.
+- **Horímetro pela última leitura válida.** É contador acumulado; a mediana de 5 min, usada para o nível, atrasaria o vencimento em ~2,5 min.
+- **Vigia separado.** Uma máquina que para de enviar não dispara nada pela ingestão; o vigia só olha a idade do dado (barato), sem recalcular a missão.
+
+**Testes**
+
+| Suíte | Resultado |
+|---|---|
+| `pytest` (unitários + API) | **214/214** (184 anteriores, sem nenhuma alteração, + 30 novos) |
+| `pytest -m infra` | **5/5** (com migração de `alerts` e alertas operacionais no PostGIS) |
+| `tsc --noEmit` / `vitest` | OK / 12/12 |
+| Demo local (A, B, C, 3 h) | B: risco de não conclusão crítico + nível de bateria em aviso; A e C sem alertas; aba Alertas conferida com Playwright |
+
+**Comportamento esperado na demo.** Cinco minutos depois da carga, o vigia abre `connection_lost` para as três operações, porque nenhuma máquina está enviando. Energia e autonomia ficam como estavam: sem dado novo não há reavaliação, e uma reavaliação com dado velho congela o estado em vez de resolver o crítico. Para ver alertas mudando ao vivo, publique com `simulator/publish.py --scenario A,B,C` (mesmo `start`).
+
+**Riscos remanescentes**
+- Os parâmetros anti-ruído (60 s, 120 s, 2 pontos, 5 de margem) não foram calibrados com máquina real; estão expostos na configuração.
+- Cada avaliação ao vivo recalcula a missão (1 a 7 s conforme a duração da operação). Com muitas máquinas, o intervalo de 30 s pode não ser cumprido; o cache da Etapa 6 resolve.
+- O alerta exibido em `/status` com `as_of` é o estado atual, não o daquele instante (o histórico completo exige replay com `window_s`).
+- O estado ao vivo fica em um processo; com várias réplicas da API, cada uma avaliaria a mesma máquina (implantação atual: uma réplica).

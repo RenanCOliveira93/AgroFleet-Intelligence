@@ -1,5 +1,9 @@
 """Caminho de streaming: MQTT -> fila -> lote -> banco -> regras de alerta -> WebSocket.
 
+Etapa 5: além das regras de evento, avalia os alertas operacionais (energia, autonomia, manutenção) das máquinas com
+operação ativa, no máximo a cada ``eval_interval_s`` por máquina, e roda um vigia de conexão a cada
+``WATCHDOG_S`` segundos mesmo sem mensagens (uma máquina que para de enviar não dispara nada pela ingestão).
+
 Fila em memória (queue.Queue): se o processo cair, mensagens ainda não gravadas se perdem; o QoS 1 do MQTT só protege
 até o ACK do cliente, não até o commit no banco (limitação documentada em docs/GUIA_TECNICO.md, seção 10).
 """
@@ -20,6 +24,7 @@ from agrofleet.schema import ENGINE_ENERGY_FIELDS, TelemetryPoint
 from .db import AlertRow, RejectRow, get_setting, insert_points, load_frame
 
 KEEP_REJECTS = 500
+WATCHDOG_S = 30.0
 
 
 def alert_config(session) -> A.AnomalyConfig:
@@ -68,8 +73,11 @@ class Live:
         self.rejects: queue.Queue = queue.Queue()
         self.clients: set = set()
         self.last_seen: dict[str, float] = {}
-        self.stats = {"queued": 0, "stored": 0, "dropped_queue_full": 0, "batches": 0}
+        self.stats = {"queued": 0, "stored": 0, "dropped_queue_full": 0, "batches": 0, "ops_evaluations": 0, "watchdog_runs": 0}
         self._task: asyncio.Task | None = None
+        self.settings = None                      # definido por create_app (necessário aos alertas operacionais)
+        self._last_ops_eval: dict[tuple[str, str], float] = {}
+        self._last_watchdog = time.monotonic()
 
     # chamado pela thread do MQTT
     def push(self, p: TelemetryPoint):
@@ -113,13 +121,18 @@ class Live:
                     rej.append(self.rejects.get_nowait())
                 except queue.Empty:
                     break
-            if not batch and not rej:
-                continue
-            try:
-                msgs = await loop.run_in_executor(None, self.process, batch, rej)
-            except Exception as e:  # nunca derrubar o laço de ingestão
-                self.stats["last_error"] = repr(e)
-                continue
+            msgs: list[dict] = []
+            if time.monotonic() - self._last_watchdog >= WATCHDOG_S and self.settings is not None:
+                self._last_watchdog = time.monotonic()
+                try:
+                    msgs += await loop.run_in_executor(None, self.run_watchdog)
+                except Exception as e:
+                    self.stats["last_error"] = repr(e)
+            if batch or rej:
+                try:
+                    msgs += await loop.run_in_executor(None, self.process, batch, rej)
+                except Exception as e:  # nunca derrubar o laço de ingestão
+                    self.stats["last_error"] = repr(e)
             for m in msgs:
                 await self.broadcast(m)
 
@@ -152,9 +165,39 @@ class Live:
                 for a in A.detect(df, cfg).alerts:
                     aid, changed = upsert_alert(s, a)
                     if changed:
-                        out.append({"type": "alert", "alert": {**a.to_dict(), "id": aid}})
+                        out.append({"type": "alert", "alert": {**a.to_dict(), "id": aid, "category": "anomaly"}})
                 s.commit()
+            out += self.evaluate_operations(s, last)
         return out
+
+    def evaluate_operations(self, s, last: dict) -> list[dict]:
+        """Alertas operacionais das máquinas do lote que têm operação ativa da mesma origem (com intervalo mínimo)."""
+        if self.settings is None:
+            return []
+        from . import op_alerts_service as OPS
+        from .db import OperationRow
+        out = []
+        every = OPS.ops_config(s).eval_interval_s
+        now = time.monotonic()
+        for mid, p in last.items():
+            key = (mid, p.origin)
+            if now - self._last_ops_eval.get(key, -1e9) < every:
+                continue
+            ops = s.execute(select(OperationRow.id).where(OperationRow.machine_id == mid, OperationRow.origin == p.origin,
+                                                          OperationRow.status == "active")).scalars().all()
+            self._last_ops_eval[key] = now
+            for op_id in ops:
+                trs, _sk, _st = OPS.evaluate(s, op_id, self, self.settings)
+                self.stats["ops_evaluations"] += 1
+                out += [{"type": "alert", "alert": a} for a in trs]
+            s.commit()
+        return out
+
+    def run_watchdog(self) -> list[dict]:
+        from . import op_alerts_service as OPS
+        with self.sf() as s:
+            self.stats["watchdog_runs"] += 1
+            return [{"type": "alert", "alert": a} for a in OPS.watchdog(s, self, self.settings)]
 
     def window_s(self, s) -> int:
         return int(get_setting(s, "alert_window_s", 600))

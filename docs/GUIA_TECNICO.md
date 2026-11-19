@@ -100,7 +100,7 @@ Não existe seta do sistema para a máquina.
 1. O simulador ou dispositivo publica um envelope v1 em `agrofleet/v1/<machine_id>/telemetry`.
 2. A thread MQTT do backend valida tópico, versão, schema e `machine_id`; mensagens inválidas viram rejeições com motivo.
 3. Pontos válidos entram em uma fila em memória (capacidade 200 000).
-4. Um laço assíncrono a cada 0,5 s drena até 5 000 pontos, grava com `INSERT ... ON CONFLICT DO NOTHING` (idempotente), carrega uma janela (padrão 600 s) das máquinas presentes no lote, roda as regras de anomalia (sem ML), faz `upsert` de alertas (funde por sobreposição de ±15 s) e envia `telemetry`/`alert` por WebSocket.
+4. Um laço assíncrono a cada 0,5 s drena até 5 000 pontos, grava com `INSERT ... ON CONFLICT DO NOTHING` (idempotente), carrega uma janela (padrão 600 s) das máquinas presentes no lote, roda as regras de anomalia (sem ML), faz `upsert` de alertas (funde por sobreposição de ±15 s) e envia `telemetry`/`alert` por WebSocket. Desde a Etapa 5, o mesmo laço também avalia os alertas operacionais das máquinas com operação ativa (no máximo a cada 30 s por máquina) e roda, a cada 30 s, um vigia de conexão que dispara mesmo sem mensagens (7.10).
 5. Exceções no lote são registradas em `stats.last_error` e não derrubam o laço; fila cheia incrementa `dropped_queue_full` (visível em `/health`).
 
 Implementação: `backend/app/live.py`.
@@ -524,7 +524,7 @@ O reenvio do mesmo arquivo não duplica dados (`stored: 0`, `duplicates_ignored`
 | frota | `GET /summary`, `/machines`, `/machines/{id}/telemetry`, `/machines/{id}/track`, `/playback` |
 | talhões | `GET /fields`, `POST /fields/upload` |
 | análise | `GET /metrics/{id}`, `/coverage`, `/reports` (`format=json\|csv`), `/postgis/check/{id}` |
-| alertas | `GET /alerts`, `POST /alerts/recompute`, `GET\|PUT /config/alerts` |
+| alertas | `GET /alerts` (filtros `status`, `category`, `severity`, `operation_id`; `sort=priority`), `POST /alerts/recompute` (`operational=true` reabre os alertas operacionais sustentados), `GET\|PUT /config/alerts`, `GET\|PUT /config/alerts/operational`, `POST /operations/{id}/alerts/replay` (analyst) |
 | ingestão | `POST /uploads`, `GET /uploads`, `GET /ingest/rejects` |
 | cadastro | `GET /registry/properties`, `PUT /registry/properties/{id}` (admin); `GET /registry/machines`, `GET\|PUT /registry/machines/{id}` (PUT: admin); `GET /operations`, `GET\|PUT /operations/{id}` (PUT: analyst) |
 | operação (Etapa 4) | `GET /operations/{id}/status` (missão, autonomia, conexão, último estado, série por intervalo), `GET /operations/{id}/geometry` (talhão, trabalhado, pendente, fora do talhão, trajeto, última posição e rumo). Ambos aceitam `as_of` (ver 7.9) |
@@ -533,11 +533,17 @@ O reenvio do mesmo arquivo não duplica dados (`stored: 0`, `duplicates_ignored`
 
 Parâmetros comuns: `origin` (`all|simulated|real|unknown`), `start`/`end` (ISO 8601 com fuso), `group_by` (`machine|property|field|operator`).
 
-**WebSocket `/ws`.** Após abrir a conexão, envie em até 5 s `{"type":"auth","token":"<jwt>"}`; sem isso o servidor fecha com código 4401. Em seguida o servidor envia `{"type":"hello"}`, `{"type":"telemetry","points":[...]}` e `{"type":"alert","alert":{...}}`. O canal é somente servidor para cliente; mensagens do cliente são ignoradas.
+**WebSocket `/ws`.** Após abrir a conexão, envie em até 5 s `{"type":"auth","token":"<jwt>"}`; sem isso o servidor fecha com código 4401. Em seguida o servidor envia `{"type":"hello"}`, `{"type":"telemetry","points":[...]}` e `{"type":"alert","alert":{...}}`. Alertas operacionais chegam com `category: "operational"` e `transition` (`raise`, `escalate`, `deescalate`, `resolve`). O canal é somente servidor para cliente; mensagens do cliente são ignoradas.
 
 ### 5.5 Alertas e configuração
 
-Os limiares são alterados por `PUT /config/alerts` (papel `admin`); a interface não tem formulário para isso. `POST /alerts/recompute?with_ml=true` recalcula incluindo o modelo experimental.
+Os limiares das regras de evento são alterados por `PUT /config/alerts` (papel `admin`); a interface não tem formulário para isso. `POST /alerts/recompute?with_ml=true` recalcula incluindo o modelo experimental.
+
+Os alertas operacionais (7.10) têm duas fontes de configuração:
+- **Limites por máquina**, no cadastro (`PUT /registry/machines/{id}`): `energy_warning_pct`, `energy_critical_pct`, `energy_reserve_pct`, `autonomy_margin_pct`, `maintenance_interval_h` e `last_maintenance_engine_h`. Sem o limite, a regra correspondente não roda e aparece em `skipped_rules` com o motivo.
+- **Parâmetros anti-ruído do sistema**, em `PUT /config/alerts/operational` (admin): `confirm_s` (60), `clear_s` (120), `level_hysteresis_pct` (2), `margin_hysteresis_pct` (5), `offline_after_s` (300), `online_within_s` (30), `maintenance_notice_h` (nulo = sem aviso prévio), `critical_requires_sensor_rate` (verdadeiro) e `eval_interval_s` (30).
+
+Para registrar uma manutenção feita, atualize `last_maintenance_engine_h` no cadastro: o alerta resolve na avaliação seguinte.
 
 ### 5.6 ISOXML e API de fabricante (não implementados)
 
@@ -650,7 +656,7 @@ print(r.gross_m2 / 1e4, r.unique_m2 / 1e4, 100 * r.excess_m2 / r.gross_m2)   # 2
 
 ### 7.6 Anomalias (`analytics/anomalies.py`)
 
-Todas as regras exigem persistência (`min_duration_s`, 20 s) e só avaliam amostras em que o sensor existe. Cada alerta é `info` ou `warning` e carrega a nota "Alerta informativo; decisões críticas permanecem com sistemas certificados e pessoas."
+Todas as regras exigem persistência (`min_duration_s`, 20 s) e só avaliam amostras em que o sensor existe. Cada alerta de evento é `info` ou `warning` (`critical` é exclusivo dos alertas operacionais de energia e autonomia, 7.10) e carrega a nota "Alerta informativo; decisões críticas permanecem com sistemas certificados e pessoas."
 
 | Regra (`type`) | Condição | Observações |
 |---|---|---|
@@ -761,6 +767,43 @@ Sensor com `sensor_quality = failed` não entra (não vira zero). O nível tem u
 | Geometria | sobreposição analítica (3 faixas de 2 m × 495 m) não infla o progresso; repasse não conta duas vezes; faixa fora do talhão não conta |
 
 Desempenho: 1,2 s por chamada de status para 3 h do cenário A; 7,6 s para o talhão completo (12 h). O cache é da Etapa 6.
+
+### 7.10 Alertas operacionais (`analytics/op_alerts.py`, `backend/app/op_alerts_service.py`)
+
+Diferentemente das regras de evento (7.6), cada família tem um **ciclo de vida** por máquina e origem: pendente, ativo (com severidade que sobe ou desce no mesmo alerta) e resolvido. Há no máximo um alerta ativo por família, e o histórico de severidades fica em `history`.
+
+| Família (`type`) | Severidade | Condição | Saída |
+|---|---|---|---|
+| `energy_level` | warning / critical | nível (mediana de 5 min, 7.9) <= `energy_warning_pct` / `energy_critical_pct` do cadastro | nível > limite da severidade atual + `level_hysteresis_pct`, por `clear_s` |
+| `autonomy_risk` | warning / critical | viabilidade amarela / vermelha (7.9) | crítico: margem >= `margin_hysteresis_pct`; aviso: margem >= exigida + histerese e pior caso >= 0; por `clear_s`. Também resolve quando a área planejada é coberta |
+| `maintenance_due` | warning (info opcional) | horímetro (última leitura válida) >= `last_maintenance_engine_h` + `maintenance_interval_h`; aviso prévio só com `maintenance_notice_h` | cadastro atualizado |
+| `connection_lost` | warning | operação ativa e idade do dado > `offline_after_s` (mesma idade do `/status`: max(enlace, dado)) | idade <= `online_within_s` |
+
+Nível baixo e risco de não conclusão são **alertas distintos**: uma máquina com 20% de combustível que termina com folga tem `energy_level` sem `autonomy_risk`, e uma com 60% que não termina tem o inverso.
+
+**Anti-ruído**
+- **Confirmação.** A condição precisa se manter por `confirm_s` antes de abrir ou subir de severidade, e cada severidade tem a própria contagem: um `critical` nunca nasce de um único instante, nem herda o tempo de um aviso anterior. Um retorno à normalidade no meio da contagem a reinicia.
+- **Histerese.** Para descer ou resolver, o valor sai da faixa com folga e fica fora por `clear_s`. Na faixa intermediária o alerta continua ativo e marcado com `in_hysteresis_band`.
+- **Congelamento.** Leitura ausente, com falha ou velha, e autonomia cinza não abrem nem resolvem nada: o estado fica como está, com `indeterminate` na evidência. Dado parado não significa problema resolvido.
+- **Portões do `critical` de autonomia.** Taxa medida por sensor (não pela queda do nível), sensor e nível concordantes e janela sem lacunas. Se algum falha, o alerta fica em `warning` e a evidência diz por quê (`critical_gates_failed`).
+
+**Execução**
+- Ao vivo: avaliação completa das máquinas do lote com operação ativa, no máximo a cada `eval_interval_s`; vigia de conexão a cada 30 s.
+- Estado (pendências e alerta ativo por família) persistido em `settings`: sobrevive a reinícios.
+- `POST /operations/{id}/alerts/replay`: reconstrói com estado novo a partir do histórico. Padrão: a janela de confirmação no fim dos dados. `window_s`/`step_s` permitem auditar a operação inteira (uma avaliação completa por passo).
+- `POST /demo/operations/load` faz esse replay no fim de cada operação; `POST /alerts/recompute` também, salvo `operational=false`. O recálculo de eventos não apaga alertas operacionais.
+- Em `/operations/{id}/status`, `alerts` lista os ativos da máquina por prioridade (crítico, aviso, informativo; recentes antes). É o estado atual, não reavaliado em `as_of`.
+
+Todo alerta crítico traz a nota: "A severidade crítica representa risco operacional estimado, não uma decisão automática de segurança. O sistema permanece exclusivamente de monitoramento, sem comandos para máquinas."
+
+**Validação** (`tests/test_op_alerts.py`, 30 testes)
+
+| Caso | Resultado |
+|---|---|
+| Sequências à mão | confirmação, pico isolado, histerese na saída, escalada com confirmação própria (mesma id), crítico direto, desescalada, congelamento por dado velho, portões, regras puladas sem cadastro |
+| Cenário B (replay a cada 5 min) | `autonomy_risk` crítico às 10:35: a ETA só existe após 30 min de operação, e a confirmação leva mais uma avaliação. São cerca de 3 h de antecedência sobre o retorno à base da verdade-terreno (13:33). `energy_level` em aviso às 12:10 e crítico às 13:25, como alerta separado. Sem regra de manutenção cadastrada (elétrico): pulada com o motivo |
+| Cenário A | 3 h sem nenhum alerta (verde, nível normal). Com a regra cadastrada, `maintenance_due` abre quando o horímetro passa de 4.832 h (fim da operação) |
+| API e ao vivo | demo abre B com crítico + aviso e A/C sem alertas; prioridade; compatibilidade dos alertas antigos; replay idempotente; vigia sem duplicar; caminho ao vivo respeita o intervalo; `DELETE /data` limpa o estado |
 
 ---
 
@@ -898,6 +941,8 @@ Antes de ler qualquer número: verificar a origem (faixa e selo), o veredito de 
 ### 9.4 Alertas
 
 - Alerta indica onde olhar, não a causa (`flow_deviation`) nem o componente (`pressure_*`).
+- `critical` (só energia e autonomia) é risco estimado por extrapolação, não decisão de segurança. Antes de agir, confira a evidência: taxa, fonte da taxa, margem e idade do dado.
+- Alerta operacional congelado (`indeterminate`) não está resolvido: o sistema perdeu a visão da máquina.
 - Um evento pode gerar vários alertas; contar alertas não é contar eventos.
 - A co-ocorrência de `pressure_outlier` e `flow_deviation` no simulador é propriedade do simulador.
 - Tolerância muito apertada inunda de falsos alarmes; muito frouxa perde o evento. Use a variabilidade do sensor real.

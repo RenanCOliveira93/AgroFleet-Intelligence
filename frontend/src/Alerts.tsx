@@ -6,7 +6,10 @@ import { fmt } from "./lib";
 
 const LABEL: Record<string, string> = { flow_deviation: "Desvio de vazão", pressure_outlier: "Pressão atípica", pressure_out_of_band: "Pressão fora da faixa", speed_out_of_range: "Velocidade fora do esperado",
   unexpected_stop: "Parada em estado de trabalho", flow_while_stopped: "Vazão com máquina parada", fault_stop: "Falha/parada reportada", gnss_loss: "Perda de GNSS", gnss_degraded: "GNSS degradado",
-  gnss_accuracy_low: "Precisão GNSS baixa", data_gap: "Lacuna de dados", sensor_missing: "Sensor sem dado", sensor_flatline: "Sensor travado", ml_multivariate_outlier: "Atípico multivariado (ML, experimental)" };
+  gnss_accuracy_low: "Precisão GNSS baixa", data_gap: "Lacuna de dados", sensor_missing: "Sensor sem dado", sensor_flatline: "Sensor travado", ml_multivariate_outlier: "Atípico multivariado (ML, experimental)",
+  // Etapa 5: alertas operacionais (com estado; a reformulação visual é da Etapa 8)
+  energy_level: "Nível de energia", autonomy_risk: "Risco de não conclusão", maintenance_due: "Manutenção preventiva", connection_lost: "Perda de conexão" };
+const SEV: Record<string, string> = { critical: "Crítico", warning: "Aviso", info: "Informativo" };
 
 export function AlertsTab({ ctx }: { ctx: Ctx }) {
   const [rows, setRows] = useState<any[]>([]);
@@ -14,7 +17,7 @@ export function AlertsTab({ ctx }: { ctx: Ctx }) {
   const [msg, setMsg] = useState("");
   const [ml, setMl] = useState(false);
   const [type, setType] = useState("");
-  const load = () => api("/alerts", { params: { origin: ctx.origin, type } }).then(setRows);
+  const load = () => api("/alerts", { params: { origin: ctx.origin, type, sort: "priority" } }).then(setRows);
   useEffect(() => { load(); }, [ctx.origin, type]);   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { api("/demo/evaluation").then(setEv).catch(() => setEv(null)); }, [rows.length]);
   const recompute = async () => {
@@ -33,11 +36,13 @@ export function AlertsTab({ ctx }: { ctx: Ctx }) {
           <button onClick={recompute} data-testid="recompute">Recalcular alertas</button></>)}
         <span className="muted">{msg}</span>
       </div>
-      <table data-testid="alerts-table"><thead><tr><th>Início (UTC)</th><th>Máquina</th><th>Origem</th><th>Tipo</th><th>Duração</th><th>Evidência</th></tr></thead>
+      <table data-testid="alerts-table"><thead><tr><th>Início (UTC)</th><th>Situação</th><th>Máquina</th><th>Origem</th><th>Tipo</th><th>Duração</th><th>Evidência</th></tr></thead>
         <tbody>{rows.map((a) => (
           <tr key={a.id} className={a.severity}>
-            <td>{a.start.replace("T", " ").slice(0, 19)}</td><td>{a.machine_id}</td><td><OriginBadge origin={a.origin} /></td>
-            <td title={a.message}><b>{LABEL[a.type] ?? a.type}</b>{a.experimental && " ⚗"}<br /><small>{a.message}</small></td>
+            <td>{a.start.replace("T", " ").slice(0, 19)}</td>
+            <td><b className={a.severity === "critical" ? "err" : a.severity === "warning" ? "warn" : "muted"}>{SEV[a.severity] ?? a.severity}</b><br /><small className="muted">{a.status === "active" ? "ativo" : "resolvido"}</small></td>
+            <td>{a.machine_id}</td><td><OriginBadge origin={a.origin} /></td>
+            <td title={a.message}><b>{LABEL[a.type] ?? a.type}</b>{a.experimental && " ⚗"}<br /><small>{a.message}</small>{a.severity === "critical" && <><br /><small className="muted">{a.note}</small></>}</td>
             <td>{fmt(a.duration_s, 0, "s")}</td>
             <td><small>{Object.entries(a.evidence).slice(0, 4).map(([k, v]) => `${k}: ${typeof v === "number" ? fmt(v, 2) : JSON.stringify(v)}`).join(" · ")}</small></td>
           </tr>))}</tbody></table>
