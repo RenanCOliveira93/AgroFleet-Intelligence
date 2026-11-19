@@ -37,6 +37,7 @@ from .config import Settings
 from .db import (AlertRow, FieldRow, MachineProfileRow, OperationRow, PropertyRow, RejectRow, TelemetryRow, UploadRow, UserRow,
                  get_setting, init_db, insert_points, is_pg, load_frame, make_engine, sessionmaker_for, set_setting)
 from .live import Live, alert_config, alert_to_dict, upsert_alert
+from . import op_alerts_service as OPS
 from .operations_api import build_operations_router
 from .registry_api import build_router, labels_for_machine, upsert_machine, upsert_operation, upsert_property
 
@@ -107,6 +108,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     SF = sessionmaker_for(engine)
     tokens = Tokens(st.auth_secret, st.token_ttl_s)
     live = Live(SF)
+    live.settings = st
     mqtt_ref: dict = {}
 
     with SF() as s:
@@ -359,19 +361,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ---------- alertas ----------
     @app.get("/alerts", tags=["alerts"])
     def alerts(machine_id: str | None = None, type: str | None = None, origin: str = "all", limit: int = Query(500, le=5000),
+               status: str = Query("all", pattern="^(all|active|resolved)$"),
+               category: str = Query("all", pattern="^(all|anomaly|operational)$"),
+               severity: str | None = Query(None, pattern="^(info|warning|critical)$"),
+               operation_id: str | None = None, sort: str = Query("recent", pattern="^(recent|priority)$"),
                _=Depends(viewer), s=Depends(session)):
-        q = select(AlertRow).order_by(AlertRow.start.desc()).limit(limit)
+        q = select(AlertRow).order_by(AlertRow.start.desc())
         if machine_id:
             q = q.where(AlertRow.machine_id == machine_id)
         if type:
             q = q.where(AlertRow.type == type)
         if origin != "all":
             q = q.where(AlertRow.origin == origin)
-        return [alert_to_dict(r) for r in s.execute(q).scalars()]
+        if severity:
+            q = q.where(AlertRow.severity == severity)
+        if operation_id:
+            q = q.where(AlertRow.operation_id == operation_id)
+        if category == "operational":
+            q = q.where(AlertRow.category == "operational")
+        elif category == "anomaly":
+            q = q.where((AlertRow.category.is_(None)) | (AlertRow.category == "anomaly"))
+        if status == "all" and sort == "recent":
+            q = q.limit(limit)                        # status derivado exige filtrar depois de ler
+        last = {(m, o): (t if t.tzinfo else t.replace(tzinfo=timezone.utc)) for m, o, t in s.execute(
+            select(TelemetryRow.machine_id, TelemetryRow.origin, func.max(TelemetryRow.ts)).group_by(TelemetryRow.machine_id, TelemetryRow.origin)).all()}
+        out = [OPS.alert_dict(r, last) for r in s.execute(q).scalars()]
+        if status != "all":
+            out = [a for a in out if a["status"] == status]
+        if sort == "priority":
+            out.sort(key=OPS.priority_key)
+        return out[:limit]
 
     @app.post("/alerts/recompute", tags=["alerts"])
     def recompute(machine_ids: str | None = None, start: datetime | None = None, end: datetime | None = None, origin: str = "all",
-                  with_ml: bool = False, replace: bool = True, _=Depends(analyst), s=Depends(session)):
+                  with_ml: bool = False, replace: bool = True, operational: bool = True, _=Depends(analyst), s=Depends(session)):
         df = load_frame(s, _ids(machine_ids), _utc(start), _utc(end), origin)
         cfg = alert_config(s)
         cfg.use_iforest = with_ml
@@ -379,12 +402,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if replace and not df.empty:
             for mid, g in df.groupby("machine_id"):
                 s.execute(delete(AlertRow).where(AlertRow.machine_id == mid, AlertRow.start >= g["ts"].min().to_pydatetime(),
-                                                 AlertRow.end <= g["ts"].max().to_pydatetime()))
+                                                 AlertRow.end <= g["ts"].max().to_pydatetime(),
+                                                 (AlertRow.category.is_(None)) | (AlertRow.category == "anomaly")))
             s.commit()
         for a in res.alerts:
             upsert_alert(s, a)
         s.commit()
-        return clean({"alerts": len(res.alerts), "skipped_rules": res.skipped_rules, "config": asdict(cfg)})
+        ops_out = {"operations": [], "transitions": 0, "skipped_rules": []}
+        if operational:                               # Etapa 5: reabre o que está sustentado no fim dos dados
+            q = select(OperationRow).where(OperationRow.status == "active")
+            if origin != "all":
+                q = q.where(OperationRow.origin == origin)
+            ids = _ids(machine_ids)
+            for op_row in s.execute(q).scalars().all():
+                if ids and op_row.machine_id not in ids:
+                    continue
+                tr, sk, _st = OPS.replay(s, op_row.id, live, st)
+                ops_out["operations"].append(op_row.id); ops_out["transitions"] += len(tr); ops_out["skipped_rules"] += sk
+        return clean({"alerts": len(res.alerts), "skipped_rules": res.skipped_rules, "config": asdict(cfg), "operational": ops_out})
 
     @app.get("/config/alerts", tags=["alerts"])
     def get_alert_cfg(_=Depends(viewer), s=Depends(session)):
@@ -402,6 +437,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, str(e))
         set_setting(s, "alert_config", body)
         return asdict(alert_config(s))
+
+    @app.get("/config/alerts/operational", tags=["alerts"])
+    def get_ops_cfg(_=Depends(viewer), s=Depends(session)):
+        return OPS.config_dict(s)
+
+    @app.put("/config/alerts/operational", tags=["alerts"])
+    def put_ops_cfg(body: dict, _=Depends(admin), s=Depends(session)):
+        from agrofleet.analytics.op_alerts import OpsAlertConfig
+        ok = {f.name for f in dc_fields(OpsAlertConfig)}
+        bad = set(body) - ok
+        if bad:
+            raise HTTPException(422, f"parâmetros desconhecidos: {sorted(bad)}")
+        try:
+            c = OpsAlertConfig(**{**OPS.config_dict(s), **body})
+        except TypeError as e:
+            raise HTTPException(422, str(e))
+        if c.confirm_s < 0 or c.clear_s < 0 or c.level_hysteresis_pct < 0 or c.margin_hysteresis_pct < 0 \
+                or c.online_within_s >= c.offline_after_s:
+            raise HTTPException(422, "valores inválidos (negativos, ou online_within_s >= offline_after_s)")
+        set_setting(s, OPS.CFG_KEY, {**(get_setting(s, OPS.CFG_KEY, {}) or {}), **body})
+        return OPS.config_dict(s)
+
+    @app.post("/operations/{operation_id}/alerts/replay", tags=["alerts"])
+    def ops_replay(operation_id: str, end: datetime | None = None, window_s: float = Query(None, ge=0, le=86400),
+                   step_s: float = Query(None, gt=0, le=3600), _=Depends(analyst), s=Depends(session)):
+        """Reconstrói os alertas operacionais da operação (estado novo). Padrão: só a janela de confirmação no fim
+        dos dados. Para auditar a operação inteira, informe window_s (custo: uma avaliação completa por passo)."""
+        tr, sk, state = OPS.replay(s, operation_id, live, st, _utc(end), window_s, step_s)
+        return clean({"transitions": tr, "skipped_rules": sk,
+                      "active": {f: (v["active"] or {}).get("severity") for f, v in (state or {}).items()}})
 
     # ---------- upload ----------
     @app.post("/uploads", tags=["ingest"])
@@ -491,7 +556,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/demo/operations/load", tags=["demo"])
     def demo_operations_load(scenarios: str = "A,B", hours: float = Query(3.0, gt=0, le=16), seed: int = 7,
-                             start: datetime | None = None, with_telemetry: bool = True, _=Depends(admin), s=Depends(session)):
+                             start: datetime | None = None, with_telemetry: bool = True, with_alerts: bool = True,
+                             _=Depends(admin), s=Depends(session)):
         """Cenários SIMULADOS da Etapa 3 (A: trator diesel; B: pulverizador elétrico autônomo; C: falhas de enlace).
 
         Grava cadastro (propriedade, máquinas, talhões, operações) e, se ``with_telemetry``, as primeiras ``hours`` horas
@@ -523,8 +589,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             s.execute(text("UPDATE fields SET geom = ST_SetSRID(ST_GeomFromGeoJSON(CAST(geojson AS text)),4326) WHERE origin='simulated'"))
             s.commit()
         set_setting(s, "sim_operations_truth", truth_all)
+        alerts_ = {}
+        if with_telemetry and with_alerts:          # alertas operacionais sustentados no fim dos dados (Etapa 5)
+            for r in results:
+                tr, _sk, state = OPS.replay(s, r.operation.operation_id, live, st)
+                alerts_[r.operation.operation_id] = {f: (v["active"] or {}).get("severity") for f, v in (state or {}).items()
+                                                     if (v["active"] or {}).get("severity")}
         return {"origin": "simulated", "start": st0.isoformat(), "hours": hours, "seed": seed, "stored": stored,
                 "operations": [r.operation.operation_id for r in results], "machines": [r.machine.machine_id for r in results],
+                "active_operational_alerts": alerts_,
                 "note": "Cenários SIMULADOS; modelo de energia sintético e não calibrado."}
 
     @app.delete("/data", tags=["demo"])
@@ -533,6 +606,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, "origin inválida")
         n = s.execute(delete(TelemetryRow).where(TelemetryRow.origin == origin)).rowcount
         a = s.execute(delete(AlertRow).where(AlertRow.origin == origin)).rowcount
+        OPS.delete_states(s, origin)
         f = s.execute(delete(FieldRow).where(FieldRow.origin == origin)).rowcount
         o = s.execute(delete(OperationRow).where(OperationRow.origin == origin)).rowcount
         mp = s.execute(delete(MachineProfileRow).where(MachineProfileRow.origin == origin)).rowcount

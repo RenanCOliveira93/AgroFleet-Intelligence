@@ -37,7 +37,7 @@ nav button.on { border-bottom-color:var(--accent); font-weight:700; }
 input,select { font:inherit; padding:5px 8px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--fg); }
 fieldset { border:1px solid var(--line); border-radius:8px; margin:8px 0; }
 table { border-collapse:collapse; width:100%; font-size:13px; } th,td { border-bottom:1px solid var(--line); padding:5px 8px; text-align:left; vertical-align:top; } thead th { position:sticky; top:0; background:var(--card); }
-table.kv th { width:55%; font-weight:600; } tr.warning td:first-child { border-left:4px solid var(--warn); } .neg { color:var(--err); } .pos { color:var(--accent); }
+table.kv th { width:55%; font-weight:600; } tr.warning td:first-child { border-left:4px solid var(--warn); } tr.critical td:first-child { border-left:4px solid var(--err); } .neg { color:var(--err); } .pos { color:var(--accent); }
 .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:8px; margin:10px 0; } .kpis div { border:1px solid var(--line); border-radius:8px; padding:8px; } .kpis small { display:block; color:var(--muted); } .kpis b { font-size:1.15rem; }
 .tornado { width:100%; max-width:640px; } .prov { color:var(--muted); font-size:11px; }
 .login { max-width:380px; margin:12vh auto; display:flex; flex-direction:column; gap:10px; }

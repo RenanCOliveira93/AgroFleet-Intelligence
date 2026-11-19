@@ -79,6 +79,12 @@ class AlertRow(Base):
     start = Column(UTCDateTime, nullable=False, index=True); end = Column(UTCDateTime, nullable=False)
     message = Column(Text, nullable=False); evidence = Column(JSON, nullable=False); rule = Column(String(128))
     origin = Column(String(16), nullable=False); experimental = Column(Boolean, nullable=False, default=False)
+    # Etapa 5 (aditivo; nulo nas linhas antigas = alerta de evento da categoria "anomaly")
+    category = Column(String(16))                 # anomaly | operational
+    status = Column(String(12))                   # operational: active | resolved
+    operation_id = Column(String(64), index=True)
+    resolved_at = Column(UTCDateTime)
+    history = Column(JSON)                        # [{ts, severity, action}] das mudanças de severidade
 
 
 class PropertyRow(Base):

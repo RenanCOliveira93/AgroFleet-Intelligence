@@ -145,7 +145,7 @@ def test_migracao_aditiva_1_0_para_1_1_no_postgis():
     from sqlalchemy import MetaData, Table, UniqueConstraint, create_engine, inspect, text
     from sqlalchemy.engine import make_url
     from agrofleet.schema import ENGINE_ENERGY_FIELDS, TelemetryPoint
-    from backend.app.db import TelemetryRow, add_missing_columns, init_db, insert_points, load_frame, sessionmaker_for
+    from backend.app.db import AlertRow, TelemetryRow, add_missing_columns, init_db, insert_points, load_frame, sessionmaker_for
     name = "agrofleet_migr_test"
     admin = create_engine(PG, isolation_level="AUTOCOMMIT")
     with admin.connect() as c:
@@ -156,6 +156,8 @@ def test_migracao_aditiva_1_0_para_1_1_no_postgis():
         md = MetaData()
         Table("telemetry", md, *[col._copy() for col in TelemetryRow.__table__.columns if col.name not in new],
               UniqueConstraint("machine_id", "ts", "origin", name="uq_tel_machine_ts_origin"))
+        new_alert = {"category", "status", "operation_id", "resolved_at", "history"}           # Etapa 5
+        Table("alerts", md, *[col._copy() for col in AlertRow.__table__.columns if col.name not in new_alert])
         md.create_all(eng)
         with eng.begin() as c:
             c.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
@@ -163,7 +165,10 @@ def test_migracao_aditiva_1_0_para_1_1_no_postgis():
                            "(CASE WHEN lat IS NULL OR lon IS NULL THEN NULL ELSE ST_SetSRID(ST_MakePoint(lon, lat), 4326) END) STORED"))
             c.execute(text("INSERT INTO telemetry (machine_id, ts, origin, state, gnss_fix, error_codes, sensor_quality, lat, lon) "
                            "VALUES ('OLD-1', '2026-03-10T10:00:00Z', 'simulated', 'working', 'rtk_fixed', '[]', '{}', -16.7, -47.6)"))
+            c.execute(text("INSERT INTO alerts (id, machine_id, type, severity, start, \"end\", message, evidence, rule, origin, experimental) "
+                           "VALUES ('a1', 'OLD-1', 'gnss_loss', 'warning', '2026-03-10T10:00:00Z', '2026-03-10T10:01:00Z', 'x', '{}', 'r', 'simulated', false)"))
         init_db(eng)
+        assert new_alert <= {c["name"] for c in inspect(eng).get_columns("alerts")}
         cols = {c["name"]: c for c in inspect(eng).get_columns("telemetry")}
         assert new <= set(cols) and "geom" in cols
         assert cols["ingested_at"]["type"].timezone is True                     # timestamptz, como ts
@@ -177,6 +182,9 @@ def test_migracao_aditiva_1_0_para_1_1_no_postgis():
             assert insert_points(s, [p]) == 1
             assert load_frame(s, ["NEW-1"])["fuel_level_pct"].iloc[0] == 55.0
             assert s.execute(text("SELECT count(*) FROM telemetry WHERE geom IS NOT NULL")).scalar() == 2   # coluna gerada intacta
+            from backend.app.op_alerts_service import alert_dict
+            old_alert = alert_dict(s.get(AlertRow, "a1"))
+            assert old_alert["category"] == "anomaly" and old_alert["status"] == "resolved" and old_alert["history"] == []
     finally:
         eng.dispose()
         with admin.connect() as c:
@@ -209,3 +217,16 @@ def test_cenarios_de_operacao_no_postgis():
         assert g["worked"] and g["track"]["type"] == "MultiLineString"
         d = c.delete("/data", params={"origin": "simulated"}, headers=h).json()
         assert d["operations"] == 2 and d["machine_profiles"] == 2
+        # Etapa 5: alertas operacionais no PostgreSQL (estado em settings, TIMESTAMPTZ nas transições)
+        from agrofleet.simulator.fleet import DEFAULT_START
+        from backend.app import op_alerts_service as OPS
+        r = c.post("/demo/operations/load", params={"scenarios": "B", "hours": 1, "start": DEFAULT_START.isoformat()}, headers=h).json()
+        assert r["active_operational_alerts"]["OP-SIM-B"] == {"autonomy_risk": "critical"}
+        app = c.app
+        with app.state.SF() as s:
+            w = OPS.watchdog(s, app.state.live, app.state.settings)
+            assert [(a["type"], a["transition"]) for a in w] == [("connection_lost", "raise")]
+            assert OPS.watchdog(s, app.state.live, app.state.settings) == []
+        al = c.get("/alerts", params={"status": "active", "sort": "priority", "category": "operational"}, headers=h).json()
+        assert [a["type"] for a in al] == ["autonomy_risk", "connection_lost"]
+        c.delete("/data", params={"origin": "simulated"}, headers=h)
