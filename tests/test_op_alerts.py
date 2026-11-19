@@ -201,6 +201,18 @@ def test_conexao_com_histerese_e_so_em_operacao_ativa():
     assert log == [(90, "resolve", "connection_lost", "warning")]
 
 
+# --- troca de operação (revisão do PR #2) ------------------------------------------------------------------------
+
+def test_troca_de_operacao_encerra_o_alerta_da_anterior():
+    st, log = run([(0, lvl(20)), (60, lvl(20))], fams=E)
+    assert log == [(60, "raise", "energy_level", "warning")]
+    st, log = run([(90, lvl(20, operation_id="OP-2"))], st, fams=E)
+    assert log == [(90, "resolve", "energy_level", "warning")]            # o da OP-1 fecha; o da OP-2 ainda confirma
+    st, log = run([(150, lvl(20, operation_id="OP-2"))], st, fams=E)
+    assert log == [(150, "raise", "energy_level", "warning")]
+    assert st["energy_level"]["active"]["operation_id"] == "OP-2"
+
+
 # --- cenários do simulador -------------------------------------------------------------------------------------------
 
 def _eval_at(r, df, minutes, state):
@@ -302,6 +314,77 @@ def test_replay_permissoes_e_idempotencia(api):
     r2 = c.post("/operations/OP-SIM-B/alerts/replay", headers=h["analyst"]).json()
     assert r1["active"] == r2["active"]
     assert len(c.get("/alerts", params={"operation_id": "OP-SIM-B", "category": "operational"}, headers=h["viewer"]).json()) == 2
+
+
+def _live_refs(app, machine_id="SIM-PE-07"):
+    from backend.app import op_alerts_service as OPS
+    from backend.app.db import AlertRow
+    with app.state.SF() as s:
+        st = OPS.load_state(s, "simulated", machine_id) or {}
+        refs = {f: v["active"]["id"] for f, v in st.items() if v.get("active")}
+        rows = {i: s.get(AlertRow, i) for i in refs.values()}
+        return refs, {i: (r.status, r.operation_id) if r else None for i, r in rows.items()}
+
+
+def test_auditoria_de_janela_passada_nao_grava_nada(api):
+    """Revisão do PR #2: reproduzir uma janela antiga não pode trocar o estado ao vivo nem os alertas gravados."""
+    c, h, app, _ = api
+    refs0, rows0 = _live_refs(app)
+    n0 = len(c.get("/alerts", params={"category": "operational"}, headers=h["viewer"]).json())
+    r = c.post("/operations/OP-SIM-B/alerts/replay", params={"end": (DEFAULT_START + timedelta(minutes=30)).isoformat()},
+               headers=h["analyst"]).json()
+    assert r["persisted"] is False and r["active"]["autonomy_risk"] is None      # às 10:30 ainda não havia risco
+    assert _live_refs(app) == (refs0, rows0) and set(refs0) == {"autonomy_risk", "energy_level"}
+    assert len(c.get("/alerts", params={"category": "operational"}, headers=h["viewer"]).json()) == n0
+
+
+def test_reconstrucao_de_operacao_anterior_preserva_o_estado_ao_vivo(api):
+    """Revisão do PR #2: reconstruir outra operação da mesma máquina não apaga nem substitui o estado da operação
+    corrente; a avaliação seguinte continua no mesmo alerta (sem duplicar) e com a operação certa."""
+    from backend.app import op_alerts_service as OPS
+    from backend.app.registry_api import get_operation, upsert_operation
+    c, h, app, _ = api
+    with app.state.SF() as s:
+        cur = get_operation(s, "OP-SIM-B")
+        upsert_operation(s, cur.model_copy(update={"operation_id": "OP-SIM-B-ANT", "status": "completed",
+                                                   "end": DEFAULT_START + timedelta(hours=1)}))
+        s.commit()
+    refs0, rows0 = _live_refs(app)
+    r = c.post("/operations/OP-SIM-B-ANT/alerts/replay", headers=h["analyst"]).json()
+    assert r["persisted"] is True
+    assert _live_refs(app) == (refs0, rows0)
+    assert all(v == ("active", "OP-SIM-B") for v in rows0.values())
+    ant = c.get("/alerts", params={"operation_id": "OP-SIM-B-ANT", "category": "operational"}, headers=h["viewer"]).json()
+    assert all(a["status"] == "resolved" for a in ant)                           # operação encerrada: nada fica aberto
+    with app.state.SF() as s:
+        tr, _sk, st = OPS.evaluate(s, "OP-SIM-B", app.state.live, app.state.settings,
+                                   as_of=DEFAULT_START + timedelta(hours=3))
+        s.commit()
+    assert [t for t in tr if t["transition"] == "raise"] == []
+    assert {f: v["active"]["id"] for f, v in st.items() if v.get("active")} == refs0
+    act = c.get("/alerts", params={"operation_id": "OP-SIM-B", "category": "operational", "status": "active"},
+                headers=h["viewer"]).json()
+    assert len(act) == 2
+    with app.state.SF() as s:                                                     # limpa para os testes seguintes
+        from backend.app.db import AlertRow, OperationRow
+        s.query(AlertRow).filter(AlertRow.operation_id == "OP-SIM-B-ANT").delete()
+        s.delete(s.get(OperationRow, "OP-SIM-B-ANT"))
+        s.commit()
+
+
+def test_operacao_corrente_e_a_ativa_mais_recente(api):
+    from backend.app import op_alerts_service as OPS
+    from backend.app.db import OperationRow
+    from backend.app.registry_api import get_operation, upsert_operation
+    _, _, app, _ = api
+    with app.state.SF() as s:
+        cur = get_operation(s, "OP-SIM-B")
+        upsert_operation(s, cur.model_copy(update={"operation_id": "OP-SIM-B-VELHA",
+                                                   "start": cur.start - timedelta(days=1)}))
+        s.commit()
+        assert OPS.current_operations(s, "simulated", "SIM-PE-07")[("simulated", "SIM-PE-07")].id == "OP-SIM-B"
+        s.delete(s.get(OperationRow, "OP-SIM-B-VELHA"))
+        s.commit()
 
 
 def test_config_operacional(api):

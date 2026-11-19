@@ -417,7 +417,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for op_row in s.execute(q).scalars().all():
                 if ids and op_row.machine_id not in ids:
                     continue
-                tr, sk, _st = OPS.replay(s, op_row.id, live, st)
+                tr, sk, _st, _p = OPS.replay(s, op_row.id, live, st)
                 ops_out["operations"].append(op_row.id); ops_out["transitions"] += len(tr); ops_out["skipped_rules"] += sk
         return clean({"alerts": len(res.alerts), "skipped_rules": res.skipped_rules, "config": asdict(cfg), "operational": ops_out})
 
@@ -463,9 +463,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def ops_replay(operation_id: str, end: datetime | None = None, window_s: float = Query(None, ge=0, le=86400),
                    step_s: float = Query(None, gt=0, le=3600), _=Depends(analyst), s=Depends(session)):
         """Reconstrói os alertas operacionais da operação (estado novo). Padrão: só a janela de confirmação no fim
-        dos dados. Para auditar a operação inteira, informe window_s (custo: uma avaliação completa por passo)."""
-        tr, sk, state = OPS.replay(s, operation_id, live, st, _utc(end), window_s, step_s)
-        return clean({"transitions": tr, "skipped_rules": sk,
+        dos dados. Para auditar a operação inteira, informe window_s (custo: uma avaliação completa por passo).
+
+        Com ``end`` anterior ao último dado é auditoria: nada é gravado (``persisted = false``). Sem ``end``, substitui
+        os alertas desta operação; o estado ao vivo da máquina só é trocado se ela for a operação corrente."""
+        tr, sk, state, persisted = OPS.replay(s, operation_id, live, st, _utc(end), window_s, step_s)
+        return clean({"transitions": tr, "skipped_rules": sk, "persisted": persisted,
                       "active": {f: (v["active"] or {}).get("severity") for f, v in (state or {}).items()}})
 
     # ---------- upload ----------
@@ -592,7 +595,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         alerts_ = {}
         if with_telemetry and with_alerts:          # alertas operacionais sustentados no fim dos dados (Etapa 5)
             for r in results:
-                tr, _sk, state = OPS.replay(s, r.operation.operation_id, live, st)
+                tr, _sk, state, _p = OPS.replay(s, r.operation.operation_id, live, st)
                 alerts_[r.operation.operation_id] = {f: (v["active"] or {}).get("severity") for f, v in (state or {}).items()
                                                      if (v["active"] or {}).get("severity")}
         return {"origin": "simulated", "start": st0.isoformat(), "hours": hours, "seed": seed, "stored": stored,

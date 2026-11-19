@@ -175,7 +175,6 @@ class Live:
         if self.settings is None:
             return []
         from . import op_alerts_service as OPS
-        from .db import OperationRow
         out = []
         every = OPS.ops_config(s).eval_interval_s
         now = time.monotonic()
@@ -183,10 +182,9 @@ class Live:
             key = (mid, p.origin)
             if now - self._last_ops_eval.get(key, -1e9) < every:
                 continue
-            ops = s.execute(select(OperationRow.id).where(OperationRow.machine_id == mid, OperationRow.origin == p.origin,
-                                                          OperationRow.status == "active")).scalars().all()
+            cur = OPS.current_operations(s, p.origin, mid).get((p.origin, mid))
             self._last_ops_eval[key] = now
-            for op_id in ops:
+            for op_id in ([cur.id] if cur is not None else []):     # só a operação corrente é dona do estado ao vivo
                 trs, _sk, _st = OPS.evaluate(s, op_id, self, self.settings)
                 self.stats["ops_evaluations"] += 1
                 out += [{"type": "alert", "alert": a} for a in trs]
