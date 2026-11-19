@@ -37,6 +37,7 @@ from .config import Settings
 from .db import (AlertRow, FieldRow, MachineProfileRow, OperationRow, PropertyRow, RejectRow, TelemetryRow, UploadRow, UserRow,
                  get_setting, init_db, insert_points, is_pg, load_frame, make_engine, sessionmaker_for, set_setting)
 from .live import Live, alert_config, alert_to_dict, upsert_alert
+from .operations_api import build_operations_router
 from .registry_api import build_router, labels_for_machine, upsert_machine, upsert_operation, upsert_property
 
 
@@ -157,6 +158,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     viewer, analyst, admin = need("viewer"), need("analyst"), need("admin")
     app.include_router(build_router(session, viewer, analyst, admin))
+    app.include_router(build_operations_router(session, viewer, live, st, clean))
 
     # ---------- público ----------
     @app.get("/health", tags=["meta"])

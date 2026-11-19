@@ -198,5 +198,14 @@ def test_cenarios_de_operacao_no_postgis():
         assert chk["field_area_m2_geography"] / 1e4 == pytest.approx(120.0, rel=3e-3)        # área elipsoidal vs. UTM do simulador
         n_work = sum(1 for p in c.get("/machines/SIM-TR-320/telemetry", headers=h).json() if p["state"] == "working")
         assert chk["points_within_field"] >= n_work > 300                                    # trabalho acontece dentro do talhão
+        # Etapa 4: status ao vivo no PostgreSQL (idade por ingested_at TIMESTAMPTZ; dado terminando agora)
+        s = c.get("/operations/OP-SIM-A/status", headers=h)
+        assert s.status_code == 200, s.text
+        s = s.json()
+        assert s["connection"]["basis"] == "max(ingested_at, ts)" and s["connection"]["age_s"] < 300
+        assert s["connection"]["state"] in ("online", "delayed") and s["mission"]["worked_ha"] > 0
+        assert "elapsed_too_short" in {r["code"] for r in s["mission"]["eta_reasons"]}       # 15 min: sem ETA
+        g = c.get("/operations/OP-SIM-A/geometry", headers=h).json()
+        assert g["worked"] and g["track"]["type"] == "MultiLineString"
         d = c.delete("/data", params={"origin": "simulated"}, headers=h).json()
         assert d["operations"] == 2 and d["machine_profiles"] == 2

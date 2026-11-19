@@ -35,6 +35,7 @@ Cada máquina (pulverizador terrestre autônomo ou convencional com telemetria) 
 | O que aconteceu em um instante | Reprodução (`Playback.tsx`), `/playback` |
 | Área coberta, repetida e não coberta | `agrofleet/analytics/coverage.py`, `/coverage` |
 | Tempo por estado, distância, produtividade, custo/ha | `agrofleet/analytics/metrics.py`, `/metrics`, `/reports` |
+| Progresso da missão, ETA com faixa, autonomia e viabilidade | `agrofleet/analytics/mission.py`, `autonomy.py`, `/operations/{id}/status` |
 | Vazão coerente com taxa x velocidade x largura | `agrofleet/analytics/anomalies.py`, `/alerts` |
 | Qualidade dos dados recebidos | `agrofleet/quality.py`, `/uploads` |
 | ROI com premissas declaradas | `agrofleet/analytics/roi.py`, `/roi` |
@@ -526,6 +527,7 @@ O reenvio do mesmo arquivo não duplica dados (`stored: 0`, `duplicates_ignored`
 | alertas | `GET /alerts`, `POST /alerts/recompute`, `GET\|PUT /config/alerts` |
 | ingestão | `POST /uploads`, `GET /uploads`, `GET /ingest/rejects` |
 | cadastro | `GET /registry/properties`, `PUT /registry/properties/{id}` (admin); `GET /registry/machines`, `GET\|PUT /registry/machines/{id}` (PUT: admin); `GET /operations`, `GET\|PUT /operations/{id}` (PUT: analyst) |
+| operação (Etapa 4) | `GET /operations/{id}/status` (missão, autonomia, conexão, último estado, série por intervalo), `GET /operations/{id}/geometry` (talhão, trabalhado, pendente, fora do talhão, trajeto, última posição e rumo). Ambos aceitam `as_of` (ver 7.9) |
 | demonstração | `POST /demo/load`, `POST /demo/operations/load` (cenários A/B/C), `GET /demo/evaluation`, `DELETE /data?origin=` (também apaga o cadastro dessa origem) |
 | ROI | `GET /roi/example`, `POST /roi`, `POST /roi/from-telemetry` |
 
@@ -623,14 +625,16 @@ Para amostras consecutivas i, i+1 da mesma máquina, o segmento gera faixa somen
 6. velocidade >= `min_speed_ms` (`low_speed`);
 7. se `require_flow_on`, vazão > 0 e sensor presente (`no_flow`).
 
-Cada segmento de comprimento L e largura w vira um retângulo (segmento expandido w/2 para cada lado, extremidades retas):
+Cada segmento de comprimento L e largura w vira um retângulo (segmento expandido w/2 para cada lado, extremidades retas). Para a área única, os segmentos de um mesmo **trecho contínuo** (mesma máquina, amostras seguidas, mesma largura) formam uma faixa só: buffer da polilinha com ponta reta e junção arredondada (`run_swaths`):
 
 ```
 bruta     = soma de L_s · w_s
-única     = área( união dos retângulos )                # shapely.unary_union
+única     = área( união das faixas por trecho contínuo )   # shapely.unary_union
 excesso   = max(bruta - única, 0)
 região>=2x = união de (ret_s ∩ ret_t), s<t, não adjacentes no tempo
 ```
+
+Por que faixa por trecho (Etapa 4): retângulos isolados deixam uma cunha aberta no lado externo de cada mudança de rumo, e a passada vizinha fecha essas cunhas em micro-buracos. No Talhão 03, 3 h geravam 9.157 anéis internos (39.807 no talhão inteiro), com subestimação da área única e mapa hachurado. Com o buffer da polilinha, a área da junção difere da área varrida em ~h²(θ/2 − tan θ/2) por vértice, desprezível a 1 Hz. Os anéis que restam no cenário A (2.494 em 3 h, 191 m² no total, ~1,4 cm de espessura) são frestas reais entre passadas planejadas exatamente a 12 m, somadas ao ruído RTK de 2 cm: a área os mantém; só o desenho (`/operations/{id}/geometry`) aplica fechamento de 5 cm. A região ≥ 2x continua por retângulo de segmento.
 
 Pares da mesma máquina com |dt| <= 4x o dt mediano (`skip_s`) são ignorados na região >= 2x, pois retângulos consecutivos da mesma passada sempre se tocam.
 
@@ -641,7 +645,7 @@ Complexidade: `unary_union` sobre N retângulos é ~O(N log N); 4 máquinas x 3 
 ```python
 from agrofleet.analytics.coverage import coverage
 r = coverage(df[df.machine_id == "SIM-01"], with_geojson=False)
-print(r.gross_m2 / 1e4, r.unique_m2 / 1e4, 100 * r.excess_m2 / r.gross_m2)   # 22.48 20.66 8.12
+print(r.gross_m2 / 1e4, r.unique_m2 / 1e4, 100 * r.excess_m2 / r.gross_m2)   # 22.48 20.74 7.76
 ```
 
 ### 7.6 Anomalias (`analytics/anomalies.py`)
@@ -705,6 +709,59 @@ print(R.break_even(I0, "area_ha_per_year", 1000, 20000))     # 6974.17
 
 JWT HS256 (`sub`, `role`, `iat`, `exp`), três papéis ordenados, senhas com scrypt (`hashlib.scrypt`, n=2^14, r=8, p=1, salt aleatório de 16 bytes, comparação em tempo constante).
 
+### 7.9 Missão e autonomia (`analytics/mission.py`, `analytics/autonomy.py`)
+
+Cálculos puros (DataFrame + cadastro → resultado), expostos por `GET /operations/{id}/status`. São **extrapolações do ritmo e do consumo observados nesta operação**, não previsões validadas; a resposta traz esse aviso em `basis`.
+
+**Missão.** Entram só amostras da máquina da operação, da mesma origem, entre `start` e `end` (ou `as_of`).
+
+| Grandeza | Definição |
+|---|---|
+| área planejada | `planned_area_ha` da operação; sem ela, área do talhão. `planned_source` diz qual |
+| área trabalhada | área(união das faixas ∩ talhão). Repasse não conta duas vezes, faixa fora do talhão não conta. Sem geometria: área única total, com aviso `no_field_geometry` |
+| série | intervalos de 10 min desde o início. Área **nova** = parte da união do intervalo que ainda não estava coberta (Σ novas = trabalhada) |
+| ha/h efetivo | área nova / tempo observado (relógio, com manobras e paradas; exclui só o tempo sem dado) |
+| ritmo atual | Σ área nova / Σ tempo observado nos intervalos dos últimos 60 min |
+| faixa do ritmo | quartis 25% e 75% do ha/h dos intervalos completos (faixa empírica, não intervalo de confiança) |
+| ETA | última amostra + restante / ritmo. Faixa: restante / max(Q3, ritmo) e restante / min(Q1, ritmo) |
+
+Sem ETA (`eta_reasons`): área planejada desconhecida, menos de 30 min, progresso abaixo de 2%, nenhuma área nova na janela, dado com mais de 5 min. Avisos que não impedem o cálculo (`reliability`): menos de 3 intervalos completos, coeficiente de variação > 0,5, mais de 10% da janela sem dado, área acima da planejada, área coberta sem a operação ter sido encerrada.
+
+**Autonomia.** U = L (diesel) ou kWh (elétrico).
+
+| Grandeza | Definição |
+|---|---|
+| nível | mediana das leituras válidas dos últimos 5 min (filtra quantização). Diesel: % × capacidade cadastrada. Elétrico: `battery_energy_kwh`, ou SOC × capacidade (`level_source` diz qual) |
+| utilizável | max(nível − reserva, 0); reserva = `energy_reserve_pct` × capacidade |
+| taxa | média ponderada pelo tempo de `fuel_rate_lph` ou `battery_power_kw` nos últimos 60 min (mínimo 15 min com leitura). Sem sensor: inclinação do nível (`level_slope`), sinalizada. Com os dois, diferença > 25% gera `rate_sources_disagree`. Abastecimento ou recarga na janela: usa só o trecho posterior |
+| autonomia | utilizável / taxa |
+| necessidade | taxa × tempo restante (central e pessimista) |
+| margem | (utilizável − necessidade) / necessidade |
+
+| Estado | Regra |
+|---|---|
+| verde, Viável | margem central ≥ `autonomy_margin_pct` **e** margem no pior caso ≥ 0 |
+| amarelo, Margem apertada | margem central ≥ 0, mas abaixo da exigida, ou pior caso negativo ou indeterminado |
+| vermelho, Insuficiente | margem central < 0: na taxa atual, a energia utilizável acaba antes de concluir |
+| cinza, Indeterminado | falta capacidade, reserva, margem exigida, leitura de nível, taxa positiva ou tempo restante, ou o dado está velho; `reasons` lista o motivo. Nada é preenchido com valor presumido |
+
+Sensor com `sensor_quality = failed` não entra (não vira zero). O nível tem uma classe própria (`level_class`: normal, baixo ou crítico pelos limites do cadastro), independente da viabilidade: uma máquina pode estar com nível baixo e ainda assim ter energia para concluir. Histerese e alertas são da Etapa 5.
+
+**Instante de avaliação e conexão.** Sem `as_of`, avalia agora: idade = max(agora − último `ingested_at`, agora − último `ts`), assim carga histórica recém-importada não parece ao vivo e relógio adiantado não esconde enlace parado. Conexão: Conectado (≤ 30 s ou MQTT ativo), Atrasado (≤ 5 min), Sem conexão. Com `as_of`, avalia como naquele instante (reprodução, auditoria). `mode_label` = "MODO SIMULAÇÃO" para origem simulada.
+
+**Validação contra a verdade-terreno** (`tests/test_mission_autonomy.py`, 39 testes):
+
+| Caso | Resultado |
+|---|---|
+| A em 3 h: ETA | 3 + 9,19 h = 12,19 h; real 12,31 h (−1%; a execução para em 99,6% do talhão porque não há cabeceira trabalhada) |
+| A em 3 h: necessidade de diesel | 304 L previstos contra 316 L consumidos (−4%); taxa do sensor e queda do nível concordam a 0,5%; status verde (margem de 36% contra 15%) |
+| B em 1 h e 3 h | vermelho (3 h: autonomia de 0,84 h para 2,96 h restantes, margem −72%); a verdade confirma o retorno à base sem concluir. Nível "Baixo" (19,5% contra 30%), informado à parte |
+| C (falhas de enlace) | 90 s perdidos aparecem como `no_data_h` (90 ± 3 s); a área perdida não é interpolada |
+| Casos à mão | 600 L, 50%, reserva de 10%, 30 L/h, restante 5 h → utilizável 240 L, autonomia 8 h, necessidade 150 L, margem 60% → verde; variações para amarelo, vermelho e cada motivo de cinza |
+| Geometria | sobreposição analítica (3 faixas de 2 m × 495 m) não infla o progresso; repasse não conta duas vezes; faixa fora do talhão não conta |
+
+Desempenho: 1,2 s por chamada de status para 3 h do cenário A; 7,6 s para o talhão completo (12 h). O cache é da Etapa 6.
+
 ---
 
 ## 8. Validação, métricas e testes
@@ -728,18 +785,19 @@ Todos os números abaixo vêm de saídas de notebooks, testes ou de `experiments
 
 Caso mínimo (2 passadas, 495 m, barra 24 m, espaçamento 22 m): esperado bruta 23 760 m², sobreposição 990 m², única 22 770 m²; obtido 23 760 / 980 / 22 780.
 
-Frota simulada (notebook 02):
+Frota simulada, medida com `coverage()` sobre `simulate()` depois da faixa por trecho contínuo (Etapa 4). As saídas gravadas no notebook 02 ainda são anteriores à correção e serão regeneradas na Etapa 9:
 
 | Máquina | Bruta est. (ha) | Bruta real | Única est. | Única real | Sobrep. est. | Sobrep. real | Erro bruta | Erro única |
 |---|---|---|---|---|---|---|---|---|
-| SIM-01 | 22,48 | 22,8 | 20,66 | 21,00 | 8,12% | 7,89% | -1,39% | -1,64% |
-| SIM-02 | 21,29 | 21,6 | 20,38 | 20,75 | 4,28% | 3,94% | -1,41% | -1,77% |
-| SIM-03 | 17,36 | 20,4 | 17,17 | 20,40 | 1,08% | 0,00% | -14,92% | -15,84% |
-| SIM-04 | 22,48 | 22,8 | 20,66 | 21,00 | 8,12% | 7,89% | -1,39% | -1,64% |
+| SIM-01 | 22,48 | 22,8 | 20,74 | 21,00 | 7,76% | 7,89% | -1,39% | -1,25% |
+| SIM-02 | 21,29 | 21,6 | 20,47 | 20,75 | 3,88% | 3,94% | -1,41% | -1,36% |
+| SIM-03 | 17,36 | 20,4 | 17,34 | 20,40 | 0,07% | 0,00% | -14,92% | -14,98% |
+| SIM-04 | 22,48 | 22,8 | 20,73 | 21,00 | 7,79% | 7,89% | -1,39% | -1,28% |
 
-- Sem eventos de posição, o erro é -1,4% a -1,8% (viés de subestimação). A causa não foi isolada; a hipótese não testada é que a discretização a 1 Hz perca parte das pontas e transições das passadas.
+- Sem eventos de posição, o erro é -1,25% a -1,4% (viés de subestimação). Antes da Etapa 4 a área única ficava em -1,6% a -1,8%: a diferença eram os micro-buracos entre retângulos (7.5). O viés da área bruta não mudou; a hipótese, ainda não testada, é que a discretização a 1 Hz perca as pontas das passadas (o último passo de cada passada não gera segmento).
 - SIM-03 tem -15%: a perda de GNSS de 4 min (241 amostras sem posição) remove cobertura que o método não interpola.
-- A sobreposição de 1,08% do SIM-03 (real 0%) é falso excesso causado pelo jitter dos 2 min de RTK-float (0,35 m).
+- A sobreposição do SIM-03 (real 0%) caiu de 1,08% para 0,07%: o falso excesso do jitter de RTK-float (0,35 m) vinha quase todo de retângulos consecutivos que se cruzavam.
+- Cenário A completo (Talhão 03, 85 passadas): trabalhado no talhão 119,38 ha contra 119,58 ha planejados (-0,16%); antes, 118,14 ha (-1,2%).
 
 ### 8.3 Sensibilidades medidas
 
@@ -875,7 +933,7 @@ Origem declarada e visível; veredito de qualidade lido; largura efetiva calibra
 **Simulador.** Idealizado (sem vento, relevo, deriva, falha real de bico, resposta real de bomba/válvula, controle de seção, multipath, operadores); local fictício. O recall de 4/4 é otimista, e a pressão modelada como função da vazão não é evidência sobre máquinas reais.
 
 **Geometria e métricas.**
-- Viés de subestimação de área de -1,4% (bruta) a -1,8% (única) sem eventos de posição.
+- Viés de subestimação de área de -1,25% a -1,4% (bruta e única) sem eventos de posição.
 - Perda de GNSS não é interpolada (SIM-03: -15% de área única).
 - Largura efetiva é entrada, não observação (+-5% leva a sobreposição de 3,7% a 12,2%).
 - Ruído de posição infla a sobreposição (sigma = 1 m: 22% contra ~8%).

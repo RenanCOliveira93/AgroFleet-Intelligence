@@ -105,3 +105,53 @@ Executadas juntas, a pedido. A interface recebeu apenas uma adição mínima (no
 - **Desempenho da cobertura (Etapa 6).** Talhão de 120 ha completo: cerca de 7 s por cálculo. Exige cache incremental antes de qualquer atualização ao vivo.
 - **Enquadramento do mapa (frontend, Etapa 8).** Na aba Cobertura, com cobertura parcial, o enquadramento automático não inclui o talhão inteiro, embora a API devolva o polígono completo. Não aparecia antes porque, nos talhões retangulares antigos, a área coberta ocupava o talhão quase inteiro.
 - **Localização fictícia.** Os talhões simulados ficam perto de (−16,70; −47,60). Com uma camada de satélite real (Etapa 8), aparecerão sobre uma imagem que não corresponde a eles; isso deve ser sinalizado na interface.
+
+## Etapa 4 — Missão e autonomia ✅
+
+**Objetivo.** Calcular no backend, com funções puras e testadas, o que o painel da referência mostra em "Missão da Operação", "Previsão de conclusão" e "Autonomia e Conclusão". Interface fora do escopo (Etapa 8).
+
+**Alterações**
+
+| Arquivo | Mudança |
+|---|---|
+| `agrofleet/analytics/coverage.py` | **Correção dos micro-buracos** (achado das Etapas 2–3): para a área única, cada trecho contínuo vira uma faixa (buffer da polilinha, ponta reta, junção arredondada). Bruta, região ≥ 2x e exclusões não mudam. `CoverageResult` passa a carregar as geometrias em metros (campos novos, opcionais). |
+| `agrofleet/analytics/mission.py` | Área planejada (com fonte), trabalhada = união ∩ talhão, progresso, horas por estado e sem dado, série de 10 min com área nova, ha/h efetivo e consumo, ritmo da última hora, faixa Q1–Q3, ETA com faixa, motivos de indisponibilidade e avisos. |
+| `agrofleet/analytics/autonomy.py` | Diesel e elétrico: nível (mediana de 5 min), reserva, utilizável, taxa ponderada pelo tempo (ou inclinação do nível, sinalizada), verificação cruzada entre as duas taxas, autonomia, necessidade, margem central e pior caso; estados verde, amarelo, vermelho e cinza com motivo; classe de nível separada. |
+| `backend/app/operations_api.py` | `GET /operations/{id}/status` e `GET /operations/{id}/geometry`, com `as_of` para reprodução; conexão por `ingested_at` e `ts`; "MODO SIMULAÇÃO" para origem simulada. |
+| `backend/app/main.py` | Monta o roteador (uma linha). |
+| `tests/test_mission_autonomy.py` | 39 testes: casos à mão, geometria analítica, cenários A/B/C contra a verdade e API. |
+| `tests/test_infra.py` | Status e geometria no PostgreSQL real (TIMESTAMPTZ de `ingested_at`). |
+| `docs/GUIA_TECNICO.md` | 5.4 (rotas), 7.5 (faixa por trecho), 7.9 (missão e autonomia), 8.2 e 10 (viés remedido). |
+
+**Cobertura antes e depois**
+
+| Medida | Antes | Depois |
+|---|---|---|
+| Anéis internos, talhão antigo (SIM-01) | 1.713 | 2 |
+| Anéis internos, Talhão 03 em 3 h / completo | 9.157 / 39.807 | 2.494 / 10.807 (frestas reais de ~1,4 cm, 191 m² em 3 h) |
+| Erro da área única sem eventos de posição | −1,6% a −1,8% | −1,25% a −1,4% (igual ao viés da bruta) |
+| Falso excesso por jitter de RTK-float (SIM-03) | 1,08% | 0,07% |
+| Talhão 03 completo, trabalhado vs planejado | −1,2% | −0,16% |
+| Tempo de cobertura, Talhão 03 completo | 7,3 s | 3,9 s |
+
+**Decisões técnicas**
+- **Ritmo efetivo em tempo de relógio.** O ha/h que gera o tempo restante inclui manobras e paradas, e a taxa de consumo usa a mesma base, de modo que necessidade = taxa × restante fica coerente. O ha/h por hora em trabalho também é informado, mas não entra na ETA.
+- **Faixa empírica, não intervalo de confiança.** Q1–Q3 do ha/h por intervalo desta operação. Não há modelo estatístico validado que justifique chamar isso de probabilidade.
+- **Cinza em vez de valor presumido.** Sem reserva, sem margem exigida, sem capacidade, sem taxa positiva ou com dado velho, o estado é cinza com o motivo; os valores que ainda são calculáveis (nível, área) continuam na resposta.
+- **Idade do dado = max(enlace, dado).** Carga histórica recém-importada não parece ao vivo, e relógio do dispositivo adiantado não esconde um enlace parado. Consequência na demo: minutos depois de `POST /demo/operations/load`, a operação aparece como "Atrasado" e depois "Sem conexão", e a autonomia fica cinza. É o comportamento certo para monitoramento; a reprodução usa `as_of`.
+- **Frestas reais não são apagadas.** As frestas de ~1 cm entre passadas planejadas lado a lado ficam no cálculo de área; só o desenho aplica fechamento de 5 cm e simplificação de 0,5 m, e a resposta avisa isso.
+
+**Testes**
+
+| Suíte | Resultado |
+|---|---|
+| `pytest` (unitários + API) | **184/184** (145 anteriores, sem nenhuma alteração, + 39 novos) |
+| `pytest -m infra` | **5/5** (com status e geometria no PostGIS) |
+| `tsc --noEmit` / `vitest` | OK / 12/12 (frontend não alterado) |
+| Demo local (A, B, C, 3 h, terminando agora) | A Viável (margem de 36%), B Insuficiente (−72%, nível Baixo), C Viável; 1,1 s por chamada de status |
+
+**Riscos remanescentes**
+- O consumo e o ritmo futuros podem mudar com solo, relevo, carga e operador; a estimativa só extrapola a última hora. Nada foi validado com máquina real.
+- A ETA mira 100% da área planejada; quando a cabeceira não é trabalhada, a operação termina um pouco antes (A: 99,6%).
+- O status recalcula tudo a cada chamada (1,2 s em 3 h; 7,6 s em 12 h). O cache incremental é da Etapa 6.
+- As saídas gravadas no notebook 02 ainda mostram os números de cobertura anteriores; serão regeneradas na Etapa 9.
