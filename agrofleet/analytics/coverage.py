@@ -5,7 +5,10 @@ Definições (por máquina ou conjunto de máquinas):
   em UTM. Só entram segmentos com os DOIS extremos em estado ``working`` (evita faixa espúria na cabeceira, quando o
   estado só muda na amostra seguinte), com posição nos dois extremos, dt <= limite e largura informada.
 - área bruta   = Σ comprimento_i × largura_i   (o que a máquina "varreu", contando repetições)
-- área única   = área( união das faixas )       (terra efetivamente coberta, sem contar duas vezes)
+- área única   = área( união das faixas )       (terra efetivamente coberta, sem contar duas vezes). Para a união, os
+  segmentos consecutivos de um mesmo trecho contínuo (mesma máquina, amostras seguidas, mesma largura) viram UMA faixa:
+  buffer da polilinha com ponta reta e junção arredondada. Retângulos isolados por segmento deixam cunhas abertas no
+  lado externo de cada mudança de rumo, que viram micro-buracos quando a passada vizinha fecha o contorno.
 - excesso      = bruta − única                  (área "reaplicada"; inclui pequenos artefatos geométricos em curvas)
 - região ≥2×   = área( união das interseções entre faixas não adjacentes )  (onde o produto caiu 2 ou mais vezes)
 Nenhuma faixa é criada sobre lacunas de dados: entre duas amostras distantes no tempo NÃO se interpola cobertura.
@@ -40,6 +43,7 @@ class Segments:
     machine: np.ndarray; t0: np.ndarray
     excluded: dict = field(default_factory=dict)
     proj: Projector | None = None
+    idx: np.ndarray | None = None    # índice da amostra inicial dentro da máquina (define trechos contínuos)
 
     def __len__(self):
         return len(self.x0)
@@ -88,12 +92,12 @@ def build_segments(df: pd.DataFrame, cfg: CoverageConfig, proj: Projector | None
             drop(~(np.nan_to_num(flow[a], nan=-1) > 0), "no_flow")
         k = np.where(ok)[0]
         parts.append((x[k], y[k], x[k + 1], y[k + 1], w[k], np.array([mid] * len(k), dtype=object),
-                      (g["ts"] - pd.Timestamp("1970-01-01", tz="UTC")).dt.total_seconds().to_numpy()[k]))
+                      (g["ts"] - pd.Timestamp("1970-01-01", tz="UTC")).dt.total_seconds().to_numpy()[k], k))
     if not parts:
         e = np.array([])
-        return Segments(e, e, e, e, e, e, e, ex, proj)
-    cat = [np.concatenate([p[j] for p in parts]) for j in range(7)]
-    return Segments(*cat, excluded=ex, proj=proj)
+        return Segments(e, e, e, e, e, e, e, ex, proj, idx=np.array([], dtype=int))
+    cat = [np.concatenate([p[j] for p in parts]) for j in range(8)]
+    return Segments(*cat[:7], excluded=ex, proj=proj, idx=cat[7])
 
 
 def swath_polygons(s: Segments) -> list[Polygon]:
@@ -112,6 +116,44 @@ def swath_polygons(s: Segments) -> list[Polygon]:
     return list(shapely.polygons(c))
 
 
+def subset(s: Segments, mask: np.ndarray) -> Segments:
+    """Segmentos selecionados por máscara booleana (mesma projeção)."""
+    return Segments(s.x0[mask], s.y0[mask], s.x1[mask], s.y1[mask], s.w[mask], s.machine[mask], s.t0[mask],
+                    excluded=dict(s.excluded), proj=s.proj, idx=None if s.idx is None else s.idx[mask])
+
+
+def run_swaths(s: Segments) -> list:
+    """Uma faixa por trecho contínuo: buffer da polilinha (ponta reta, junção arredondada).
+
+    Trecho contínuo = segmentos seguidos da mesma máquina (o fim de um é o início do outro) com a mesma largura.
+    Para curvas com raio >= meia largura, a área do buffer é a área varrida pela barra (Pappus), igual a Σ L×w; em
+    vértices discretos a diferença por junção é ~ h²(θ/2 − tan θ/2), desprezível a 1 Hz. Sem ``idx`` (segmentos montados
+    à mão), cai no retângulo por segmento.
+    """
+    if not len(s):
+        return []
+    if s.idx is None:
+        return swath_polygons(s)
+    L = np.hypot(s.x1 - s.x0, s.y1 - s.y0)
+    keep = np.where(L > 1e-6)[0]
+    if not len(keep):
+        return []
+    brk = np.ones(len(keep), bool)
+    if len(keep) > 1:
+        a, b = keep[:-1], keep[1:]
+        cont = (s.machine[b] == s.machine[a]) & (s.idx[b] == s.idx[a] + 1) & (s.w[b] == s.w[a])
+        brk[1:] = ~cont
+    starts = np.flatnonzero(brk)
+    ends = np.append(starts[1:], len(keep))
+    out = []
+    for i0, i1 in zip(starts, ends):
+        k = keep[i0:i1]
+        xs = np.concatenate([[s.x0[k[0]]], s.x1[k]]); ys = np.concatenate([[s.y0[k[0]]], s.y1[k]])
+        line = shapely.linestrings(np.stack([xs, ys], -1))
+        out.append(shapely.buffer(line, float(s.w[k[0]]) / 2, cap_style="flat", join_style="round", quad_segs=4))
+    return out
+
+
 @dataclass
 class CoverageResult:
     gross_m2: float
@@ -126,6 +168,10 @@ class CoverageResult:
     covered_in_field_m2: float | None = None
     uncovered_in_field_m2: float | None = None
     outside_field_m2: float | None = None
+    # geometrias em metros (projeção ``proj``), para quem precisa recortar ou simplificar sem refazer a união
+    union_geom: object = field(default=None, repr=False)
+    field_geom: object = field(default=None, repr=False)
+    proj: Projector | None = field(default=None, repr=False)
 
     def summary(self) -> dict:
         d = {"gross_ha": ha(self.gross_m2), "unique_ha": ha(self.unique_m2), "excess_ha": ha(self.excess_m2),
@@ -166,7 +212,7 @@ def coverage_from_segments(s: Segments, field_lonlat: dict | None = None, with_g
     # gross exato = Σ L×w (polygon.area dá o mesmo para retângulos; mantemos a fórmula explícita)
     L = np.hypot(s.x1 - s.x0, s.y1 - s.y0)
     gross = float(np.sum(L * s.w))
-    uni = unary_union(polys)
+    uni = unary_union(run_swaths(s))
     excess = max(gross - uni.area, 0.0)
     keep = L > 1e-6
     t0 = s.t0[keep]
@@ -175,6 +221,7 @@ def coverage_from_segments(s: Segments, field_lonlat: dict | None = None, with_g
     ov = overlap_region(polys, s.machine[keep], t0, skip_s)
     res = CoverageResult(gross, float(uni.area), excess, float(ov.area) if ov is not None else 0.0, len(polys), s.excluded, None, None)
     proj = s.proj
+    res.union_geom, res.proj = uni, proj
     def to_ll(g):
         return mapping(transform_geom(g, proj.inv))
     if with_geojson:
@@ -182,6 +229,7 @@ def coverage_from_segments(s: Segments, field_lonlat: dict | None = None, with_g
         res.overlap_geojson = to_ll(ov) if ov is not None else None
     if field_lonlat is not None:
         fld = transform_geom(shape(field_lonlat), proj.fwd)
+        res.field_geom = fld
         res.field_area_m2 = float(fld.area)
         res.covered_in_field_m2 = float(uni.intersection(fld).area)
         res.uncovered_in_field_m2 = float(fld.difference(uni).area)

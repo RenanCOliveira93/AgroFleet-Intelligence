@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.1",
+  "type": "telemetry",
+  "message_id": "PULV-EX-E1-000001",
+  "sent_at": "2026-05-01T12:00:01+00:00",
+  "data": {
+    "machine_id": "PULV-EX-E1",
+    "ts": "2026-05-01T12:00:00+00:00",
+    "origin": "simulated",
+    "lat": -20.1,
+    "lon": -45.1,
+    "speed_ms": 1.8,
+    "heading_deg": 182.0,
+    "state": "working",
+    "gnss_fix": "rtk_fixed",
+    "accuracy_m": 0.02,
+    "flow_lpm": 21.6,
+    "pressure_bar": 2.8,
+    "tank_level_l": 310.0,
+    "working_width_m": 12.0,
+    "application_rate_lha": 100.0,
+    "battery_soc_pct": 54.0,
+    "battery_energy_kwh": 21.6,
+    "battery_power_kw": 6.4,
+    "error_codes": [],
+    "sensor_quality": {"gnss": "ok", "flow": "ok", "pressure": "ok", "tank_level": "ok", "battery": "ok", "heading": "ok"},
+    "field_id": "TALHAO-EX-03"
+  }
+}

@@ -29,14 +29,16 @@ from agrofleet.analytics import roi as R
 from agrofleet.analytics.coverage import CoverageConfig, coverage
 from agrofleet.analytics.metrics import filter_period, machine_metrics, report
 from agrofleet.quality import assess
-from agrofleet.schema import SCHEMA_VERSION
+from agrofleet.schema import ENGINE_ENERGY_FIELDS, SCHEMA_VERSION
 from agrofleet.simulator.fleet import simulate
 
 from .auth import ROLES, Tokens, hash_password, verify_password
 from .config import Settings
-from .db import (AlertRow, FieldRow, RejectRow, TelemetryRow, UploadRow, UserRow, get_setting, init_db, insert_points,
-                 is_pg, load_frame, make_engine, sessionmaker_for, set_setting)
+from .db import (AlertRow, FieldRow, MachineProfileRow, OperationRow, PropertyRow, RejectRow, TelemetryRow, UploadRow, UserRow,
+                 get_setting, init_db, insert_points, is_pg, load_frame, make_engine, sessionmaker_for, set_setting)
 from .live import Live, alert_config, alert_to_dict, upsert_alert
+from .operations_api import build_operations_router
+from .registry_api import build_router, labels_for_machine, upsert_machine, upsert_operation, upsert_property
 
 
 def clean(o):
@@ -80,6 +82,14 @@ LIMITS = {
     "not_validated": ["telemetria de máquina real", "ISOXML/TASKDATA", "API de fabricante", "CAN/ISOBUS", "Docker Desktop (apenas Podman foi executado)",
                       "segurança funcional (ISO 13849/25119): fora de escopo"],
 }
+
+
+def _profile_brief(row, origin: str) -> dict:
+    if row is None or row.origin != origin:
+        return {"name": None, "kind": None, "energy_source": None, "kind_label": None, "energy_label": None}
+    from agrofleet.registry import MachineProfile
+    m = MachineProfile.model_validate(row.spec)
+    return {"name": m.name, "kind": m.kind, "energy_source": m.energy_source, **labels_for_machine(m)}
 
 
 class RoiBody(BaseModel):
@@ -147,6 +157,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return dep
 
     viewer, analyst, admin = need("viewer"), need("analyst"), need("admin")
+    app.include_router(build_router(session, viewer, analyst, admin))
+    app.include_router(build_operations_router(session, viewer, live, st, clean))
 
     # ---------- público ----------
     @app.get("/health", tags=["meta"])
@@ -188,13 +200,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if origin != "all":
             sub = sub.where(TelemetryRow.origin == origin)
         out = []
+        profiles = {r.id: r for r in s.execute(select(MachineProfileRow)).scalars()}
         for mid, org, mx, n in s.execute(sub).all():
             last = s.execute(select(TelemetryRow).where(TelemetryRow.machine_id == mid, TelemetryRow.origin == org, TelemetryRow.ts == mx)).scalars().first()
             nal = s.execute(select(func.count()).select_from(AlertRow).where(AlertRow.machine_id == mid, AlertRow.origin == org)).scalar()
             out.append({"machine_id": mid, "origin": org, "samples": n, "last_ts": mx.isoformat(), "live": live.is_live(mid, st.live_window_s),
                         "state": last.state, "gnss_fix": last.gnss_fix, "lat": last.lat, "lon": last.lon, "speed_ms": last.speed_ms,
                         "flow_lpm": last.flow_lpm, "pressure_bar": last.pressure_bar, "tank_level_l": last.tank_level_l,
-                        "field_id": last.field_id, "operator_id": last.operator_id, "alerts": nal})
+                        "field_id": last.field_id, "operator_id": last.operator_id, "alerts": nal,
+                        **{f: getattr(last, f) for f in ENGINE_ENERGY_FIELDS},
+                        "ingested_at": last.ingested_at.isoformat() if last.ingested_at else None,
+                        # cadastro (só se existir perfil da MESMA origem; senão null — nada é deduzido da telemetria)
+                        **_profile_brief(profiles.get(mid), org)})
         return sorted(out, key=lambda r: (r["machine_id"], r["origin"]))
 
     @app.get("/machines/{machine_id}/telemetry", tags=["fleet"])
@@ -472,6 +489,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return clean({**ev, "origin": "simulated", "caveat": "Eventos injetados por nós, com regras escritas conhecendo o simulador: otimista por construção.",
                       "areas_truth": tr["areas"]})
 
+    @app.post("/demo/operations/load", tags=["demo"])
+    def demo_operations_load(scenarios: str = "A,B", hours: float = Query(3.0, gt=0, le=16), seed: int = 7,
+                             start: datetime | None = None, with_telemetry: bool = True, _=Depends(admin), s=Depends(session)):
+        """Cenários SIMULADOS da Etapa 3 (A: trator diesel; B: pulverizador elétrico autônomo; C: falhas de enlace).
+
+        Grava cadastro (propriedade, máquinas, talhões, operações) e, se ``with_telemetry``, as primeiras ``hours`` horas
+        de telemetria. Por padrão a operação termina AGORA (start = agora − hours), para parecer em andamento.
+        Com ``with_telemetry=false`` só o cadastro é gravado (use com ``simulator/publish.py --scenario``, mesmo ``start``).
+        No cenário C só entram as amostras efetivamente ENTREGUES (perdas viram lacunas; duplicatas são ignoradas)."""
+        from agrofleet.simulator.operations import run_scenarios
+        keys = [k.strip().upper() for k in scenarios.split(",") if k.strip()]
+        st0 = _utc(start) or (datetime.now(timezone.utc) - pd.Timedelta(hours=hours).to_pytimedelta()).replace(second=0, microsecond=0)
+        try:
+            results = run_scenarios(keys, seed=seed, start=st0, max_seconds=hours * 3600)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        stored, truth_all = 0, {}
+        for r in results:
+            upsert_property(s, r.property)
+            row = s.get(FieldRow, r.scenario.field.field_id) or FieldRow(id=r.scenario.field.field_id)
+            row.name, row.property_id, row.origin, row.geojson = r.scenario.field.name, r.property.property_id, "simulated", r.field_lonlat
+            s.add(row)
+            upsert_machine(s, r.machine)
+            s.flush()
+            upsert_operation(s, r.operation)
+            s.commit()
+            if with_telemetry:
+                pts = [d.point for d in r.truth["_deliveries"] if not d.duplicate] if "_deliveries" in r.truth else r.points
+                stored += insert_points(s, pts)
+            truth_all[r.scenario.key] = {k: v for k, v in r.truth.items() if k != "_deliveries"}
+        if is_pg(s):
+            s.execute(text("UPDATE fields SET geom = ST_SetSRID(ST_GeomFromGeoJSON(CAST(geojson AS text)),4326) WHERE origin='simulated'"))
+            s.commit()
+        set_setting(s, "sim_operations_truth", truth_all)
+        return {"origin": "simulated", "start": st0.isoformat(), "hours": hours, "seed": seed, "stored": stored,
+                "operations": [r.operation.operation_id for r in results], "machines": [r.machine.machine_id for r in results],
+                "note": "Cenários SIMULADOS; modelo de energia sintético e não calibrado."}
+
     @app.delete("/data", tags=["demo"])
     def delete_data(origin: str, _=Depends(admin), s=Depends(session)):
         if origin not in ("simulated", "real", "unknown"):
@@ -479,8 +534,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         n = s.execute(delete(TelemetryRow).where(TelemetryRow.origin == origin)).rowcount
         a = s.execute(delete(AlertRow).where(AlertRow.origin == origin)).rowcount
         f = s.execute(delete(FieldRow).where(FieldRow.origin == origin)).rowcount
+        o = s.execute(delete(OperationRow).where(OperationRow.origin == origin)).rowcount
+        mp = s.execute(delete(MachineProfileRow).where(MachineProfileRow.origin == origin)).rowcount
+        pr = s.execute(delete(PropertyRow).where(PropertyRow.origin == origin)).rowcount
         s.commit()
-        return {"telemetry": n, "alerts": a, "fields": f}
+        return {"telemetry": n, "alerts": a, "fields": f, "operations": o, "machine_profiles": mp, "properties": pr}
 
     @app.get("/postgis/check/{machine_id}", tags=["analytics"])
     def postgis_check(machine_id: str, field_id: str | None = None, _=Depends(viewer), s=Depends(session)):

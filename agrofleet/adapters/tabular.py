@@ -35,6 +35,16 @@ ALIASES = {
     "origin": ["origin", "origem"],
     "property_id": ["property_id", "propriedade"], "field_id": ["field_id", "talhao", "talhão", "plot_id"],
     "operator_id": ["operator_id", "operador"],
+    # 1.1 — motor e energia
+    "engine_rpm": ["engine_rpm", "rpm", "engine_speed_rpm", "rotacao", "rotação", "rotacao_rpm"],
+    "engine_load": ["engine_load_pct", "engine_load", "carga_motor", "carga_motor_pct"],
+    "engine_hours": ["engine_hours_h", "engine_hours", "hour_meter", "horimetro", "horímetro"],
+    "fuel_level": ["fuel_level_pct", "fuel_level", "nivel_combustivel", "nível_combustível", "combustivel_pct"],
+    "fuel_rate": ["fuel_rate_lph", "fuel_rate", "consumo_combustivel_lh", "taxa_combustivel"],
+    "battery_soc": ["battery_soc_pct", "battery_soc", "soc", "soc_pct", "estado_carga_pct"],
+    "battery_energy": ["battery_energy_kwh", "battery_energy", "energia_bateria_kwh"],
+    "battery_power": ["battery_power_kw", "battery_power", "potencia_bateria_kw", "potência_bateria_kw"],
+    "heading": ["heading_deg", "heading", "course", "cog", "rumo"],
 }
 UNITS = {  # grandeza -> {unidade: fator para a unidade canônica}
     "speed": {"m/s": 1.0, "km/h": 1 / 3.6, "mph": 0.44704, "kn": 0.514444},
@@ -43,9 +53,25 @@ UNITS = {  # grandeza -> {unidade: fator para a unidade canônica}
     "tank_level": {"l": 1.0, "m3": 1000.0}, "consumption": {"l": 1.0, "m3": 1000.0},
     "width": {"m": 1.0, "cm": 0.01, "ft": 0.3048},
     "accuracy_m": {"m": 1.0, "cm": 0.01}, "rate": {"l/ha": 1.0},
+    "engine_rpm": {"rpm": 1.0}, "engine_load": {"%": 1.0},
+    "engine_hours": {"h": 1.0, "min": 1 / 60, "s": 1 / 3600},
+    "fuel_level": {"%": 1.0, "fraction": 100.0},
+    "fuel_rate": {"l/h": 1.0, "l/min": 60.0, "gal/h": 3.785411784},   # galão americano
+    "battery_soc": {"%": 1.0, "fraction": 100.0},
+    "battery_energy": {"kwh": 1.0, "wh": 0.001},
+    "battery_power": {"kw": 1.0, "w": 0.001},
+    "heading": {"deg": 1.0, "rad": 180 / math.pi},
 }
 CANON_UNIT = {"speed": "m/s", "pressure": "bar", "flow": "l/min", "tank_level": "l", "consumption": "l", "width": "m",
-              "accuracy_m": "m", "rate": "l/ha"}
+              "accuracy_m": "m", "rate": "l/ha", "engine_rpm": "rpm", "engine_load": "%", "engine_hours": "h", "fuel_level": "%",
+              "fuel_rate": "l/h", "battery_soc": "%", "battery_energy": "kwh", "battery_power": "kw", "heading": "deg"}
+# grandeza (chave de ALIASES/UNITS) -> campo do TelemetryPoint
+NUMERIC_TARGETS = (("speed", "speed_ms"), ("pressure", "pressure_bar"), ("flow", "flow_lpm"), ("tank_level", "tank_level_l"),
+                   ("consumption", "consumption_l"), ("width", "working_width_m"), ("accuracy_m", "accuracy_m"),
+                   ("rate", "application_rate_lha"),
+                   ("engine_rpm", "engine_rpm"), ("engine_load", "engine_load_pct"), ("engine_hours", "engine_hours_h"),
+                   ("fuel_level", "fuel_level_pct"), ("fuel_rate", "fuel_rate_lph"), ("battery_soc", "battery_soc_pct"),
+                   ("battery_energy", "battery_energy_kwh"), ("battery_power", "battery_power_kw"), ("heading", "heading_deg"))
 STATE_ALIASES = {
     "working": State.working, "applying": State.working, "spraying": State.working, "trabalhando": State.working, "aplicando": State.working,
     "transport": State.transport, "transporte": State.transport, "driving": State.transport, "deslocamento": State.transport,
@@ -117,9 +143,7 @@ def row_to_point(row: dict, cmap: dict, units: dict, opt: dict) -> TelemetryPoin
         raise ValueError("timestamp ausente")
     d["ts"] = parse_ts(g("ts"), opt["ts_format"], opt["assume_tz"])
     d["lat"], d["lon"] = _num(g("lat")), _num(g("lon"))
-    for k, target in (("speed", "speed_ms"), ("pressure", "pressure_bar"), ("flow", "flow_lpm"), ("tank_level", "tank_level_l"),
-                      ("consumption", "consumption_l"), ("width", "working_width_m"), ("accuracy_m", "accuracy_m"),
-                      ("rate", "application_rate_lha")):
+    for k, target in NUMERIC_TARGETS:
         v = _num(g(k))
         d[target] = None if v is None else v * UNITS[k][units[k]]
     sv = g("state")

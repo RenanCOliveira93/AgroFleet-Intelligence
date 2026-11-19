@@ -114,7 +114,7 @@ def test_mqtt_parse_message():
     pts, _ = simulate(max_seconds=2)
     p = pts[0]
     ok = parse_message(f"agrofleet/v1/{p.machine_id}/telemetry", json.dumps(wrap(p, "a")).encode())
-    assert ok.machine_id == p.machine_id and SCHEMA_VERSION == "1.0"
+    assert ok.machine_id == p.machine_id and SCHEMA_VERSION == "1.1"   # 1.1: campos opcionais de motor/energia (aditivo)
     for topic, payload, frag in [("agrofleet/v1/OTHER/telemetry", json.dumps(wrap(p, "a")), "difere do tópico"),
                                  ("outro/topico", json.dumps(wrap(p, "a")), "fora do padrão"),
                                  (f"agrofleet/v1/{p.machine_id}/telemetry", "{nao json", "não é JSON"),

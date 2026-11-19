@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from agrofleet.analytics import anomalies as A
 from agrofleet.analytics.frame import to_frame
-from agrofleet.schema import TelemetryPoint
+from agrofleet.schema import ENGINE_ENERGY_FIELDS, TelemetryPoint
 
 from .db import AlertRow, RejectRow, get_setting, insert_points, load_frame
 
@@ -55,9 +55,10 @@ def alert_to_dict(r: AlertRow) -> dict:
 
 
 def point_brief(p: TelemetryPoint) -> dict:
+    """Resumo enviado pelo WebSocket. Campos 1.1 são ADITIVOS (clientes antigos ignoram) e vão como null se não reportados."""
     return {"machine_id": p.machine_id, "ts": p.ts.isoformat(), "lat": p.lat, "lon": p.lon, "speed_ms": p.speed_ms, "state": p.state.value,
             "gnss_fix": p.gnss_fix.value, "flow_lpm": p.flow_lpm, "pressure_bar": p.pressure_bar, "tank_level_l": p.tank_level_l,
-            "origin": p.origin}
+            "origin": p.origin, **{f: getattr(p, f) for f in ENGINE_ENERGY_FIELDS}}
 
 
 class Live:
