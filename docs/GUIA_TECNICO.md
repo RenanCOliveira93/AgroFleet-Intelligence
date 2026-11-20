@@ -135,7 +135,7 @@ O compose recusa subir sem `POSTGRES_PASSWORD`, `MQTT_*_PASSWORD` e `AGROFLEET_A
 ### 2.6 Estrutura do código
 
 ```
-agrofleet/          núcleo: schema, geo, quality, adapters/, analytics/, simulator/
+agrofleet/          núcleo: schema, geo, quality, adapters/, analytics/, simulator/, weather/ (clima)
 backend/app/        FastAPI, banco, auth, pipeline ao vivo
 frontend/           React + TypeScript + MapLibre GL JS
 simulator/          CLIs generate.py e publish.py
@@ -218,7 +218,7 @@ O cadastro é **configuração informada por pessoas**, não telemetria. Fica na
 
 | Modelo | Campos principais | Regras |
 |---|---|---|
-| `PropertyInfo` | `property_id`, `name`, `timezone` (IANA, padrão `America/Sao_Paulo`) | o fuso serve só para exibir horários; o armazenamento é sempre UTC |
+| `PropertyInfo` | `property_id`, `name`, `timezone` (IANA, padrão `America/Sao_Paulo`), `ibge_municipality` (opcional) | o fuso serve só para exibir horários e escolher o período da previsão do tempo; o armazenamento é sempre UTC. `ibge_municipality`: código IBGE do município com 7 dígitos, começando pelo código de uma UF (ex.: `5206206`); usado pelo clima (7.12) |
 | `MachineProfile` | `name`, `kind` (trator, pulverizador, colheitadeira, outro), `energy_source` (diesel, elétrico, não informado), `autonomous`, `fuel_tank_capacity_l` ou `battery_capacity_kwh`, `energy_reserve_pct`, `energy_warning_pct`, `energy_critical_pct`, `autonomy_margin_pct`, `maintenance_interval_h` + `last_maintenance_engine_h` | só a capacidade da fonte declarada; crítico < aviso; crítico ≥ reserva; manutenção exige os dois campos e não se aplica a máquina elétrica |
 | `OperationPlan` | `name`, `operation_type`, `machine_id`, `field_id`, `planned_area_ha` (vazio = área do talhão), `implement_width_m`, `start`/`end` (com fuso), `status` | máquina e talhão precisam existir; **operação, máquina e talhão com a mesma `origin`** |
 
@@ -349,6 +349,16 @@ podman compose exec db pg_dump -U $POSTGRES_USER $POSTGRES_DB > backup.sql
 | `AGROFLEET_STATUS_INTERVAL_S` | intervalo mínimo entre mensagens `operation_status` da mesma operação | padrão 5 |
 | `AGROFLEET_OPS_CACHE_SIZE` | operações mantidas no cache incremental (LRU, por processo) | padrão 8 (~40 MB por operação de 5 h, ~65 MB de 12 h) |
 | `AGROFLEET_CORS_ORIGINS` | CORS (lista por vírgula) | vazio = sem CORS |
+| `AGROFLEET_WEATHER_PROVIDERS` | provedores de clima, em ordem de preferência (`inmet`, `metno`, `openmeteo`, `none`) | padrão `inmet` (ver 7.12) |
+| `AGROFLEET_WEATHER_TIMEOUT_S` | tempo limite de cada busca de clima | padrão 8 |
+| `AGROFLEET_WEATHER_MAX_AGE_S` | idade a partir da qual a observação é marcada `stale` | padrão 7200 (2 h) |
+| `AGROFLEET_WEATHER_OBS_TTL_S` / `_FORECAST_TTL_S` / `_FAIL_TTL_S` | cache em memória da observação, da previsão e das falhas | padrão 1800 / 10800 / 120 |
+| `AGROFLEET_WEATHER_IBGE` | município padrão (7 dígitos) quando a propriedade não tem `ibge_municipality` | vazio = sem padrão |
+| `AGROFLEET_WEATHER_USER_AGENT` | User-Agent das buscas de clima | padrão `AgroFleet-Intelligence/1.1 (+https://github.com/RenanCOliveira93/AgroFleet-Intelligence)` |
+| `AGROFLEET_INMET_TOKEN` | token da API de estações do INMET (só via Acordo de Cooperação Técnica) | vazio = só rotas públicas |
+| `AGROFLEET_INMET_MAX_STATION_KM` | distância máxima do ponto à estação INMET | padrão 60 |
+| `AGROFLEET_WEATHER_ALLOW_NONCOMMERCIAL` | `1` libera o Open-Meteo gratuito (não comercial) | só vale com `AGROFLEET_ENV=dev` |
+| `OPENMETEO_BASE_URL` / `OPENMETEO_API_KEY` | endpoint e chave do plano pago do Open-Meteo | com chave, o Open-Meteo vale em qualquer ambiente |
 | `MQTT_HOST/PORT/USER/PASSWORD/CAFILE` | cliente MQTT do backend | `MQTT_HOST` vazio desliga o MQTT |
 | `HTTP_PORT` | porta do frontend | padrão 8080 |
 | `SIM_SPEEDUP/SEED/MAX_SECONDS` | simulador (perfil `sim`) | |
@@ -530,6 +540,7 @@ O reenvio do mesmo arquivo não duplica dados (`stored: 0`, `duplicates_ignored`
 | ingestão | `POST /uploads`, `GET /uploads`, `GET /ingest/rejects` |
 | cadastro | `GET /registry/properties`, `PUT /registry/properties/{id}` (admin); `GET /registry/machines`, `GET\|PUT /registry/machines/{id}` (PUT: admin); `GET /operations`, `GET\|PUT /operations/{id}` (PUT: analyst) |
 | operação (Etapa 4) | `GET /operations/{id}/status` (missão, autonomia, conexão, último estado, série por intervalo), `GET /operations/{id}/geometry` (talhão, trabalhado, pendente, fora do talhão, trajeto, última posição e rumo). Ambos aceitam `as_of` (ver 7.9). Desde a Etapa 6, calculados com cache incremental (7.11) |
+| clima (Etapa 7) | `GET /operations/{id}/weather` (ponto da operação: centroide do talhão ou última posição) e `GET /weather?lat=&lon=&ibge=&tz=` (ponto ou município). Papel viewer. Falha do provedor nunca vira 5xx: volta `status: "unavailable"`, `message: "Sem dados meteorológicos"` e `reasons`. Ver 7.12 |
 | demonstração | `POST /demo/load`, `POST /demo/operations/load` (cenários A/B/C), `GET /demo/evaluation`, `DELETE /data?origin=` (também apaga o cadastro dessa origem) |
 | ROI | `GET /roi/example`, `POST /roi`, `POST /roi/from-telemetry` |
 
@@ -557,22 +568,63 @@ Para registrar uma manutenção feita, atualize `last_maintenance_engine_h` no c
 
 ## 6. Uso da interface
 
-Acesse `http://<servidor>:<HTTP_PORT>` (padrão 8080) com usuário e senha definidos no `.env` (não existe usuário padrão). A faixa no topo informa se os dados exibidos são simulados, reais ou desconhecidos; o seletor de origem filtra todas as abas e cada máquina tem selo de origem. `real` é declaração de quem enviou os dados.
+Acesse `http://<servidor>:<HTTP_PORT>` (padrão 8080) com usuário e senha definidos no `.env` (não existe usuário padrão).
 
-| Aba | Função |
+**Cabeçalho e barra de contexto.**
+- Cinco seções: Operação, Frota, Planejamento, Análises e Alertas. O sino mostra quantos alertas estão ativos.
+- À direita ficam o seletor de propriedade e o menu da conta, com Tema (claro, escuro ou automático, guardado no navegador), Sobre / limites e Sair.
+- A barra abaixo do cabeçalho mostra:
+  - a procedência dos dados, com a pílula "MODO SIMULAÇÃO" quando tudo é simulado;
+  - o filtro de origem, que vale para todas as seções;
+  - o estado da conexão ao vivo.
+- `real` é declaração de quem enviou os dados.
+
+| Seção | Subaba | Função |
+|---|---|---|
+| Operação | — | Painel da operação selecionada (a ativa mais recente da propriedade; troca pelo seletor no card da máquina). Detalhes abaixo. |
+| Frota | — | Cartões por máquina (estado, velocidade, GNSS, vazão, pressão, tanque, motor e energia quando reportados, "ao vivo"); mapa com posição atual e trilha. Campo ausente aparece como "—", nunca como 0 |
+| Planejamento | Operações | Cadastro (somente leitura) de operações, máquinas e talhões da propriedade; "Ver no painel" abre a operação |
+| Planejamento | Upload | Tipo, origem, fuso, unidades e `machine_id`; envio sem gravar mostra o relatório de qualidade; só então gravar. ISOXML retorna o motivo da recusa |
+| Análises | Reprodução | Controle deslizante sobre o histórico. Sem extrapolação: antes do primeiro ponto, depois do último ou durante perda de GNSS a máquina não é desenhada |
+| Análises | Cobertura | Área bruta, única, excesso e região >= 2x; cobertura do talhão; motivos de exclusão |
+| Análises | Relatórios | Agrupamento por máquina, propriedade, talhão ou operador, com período; exportação CSV |
+| Análises | ROI | Premissas editáveis; custo/ha, benefício, payback, VPL, tornado, pontos de equilíbrio e grade. O exemplo é ilustrativo |
+| Alertas | — | Lista com tipo, severidade, intervalo, regra e evidências; filtro por máquina quando aberta a partir do painel; `analyst` pode recalcular |
+| Sobre / limites (menu da conta) | — | Escopo, limites e estado de cada adaptador; `admin` carrega ou apaga a demonstração simulada |
+
+**Painel Operação.** Todos os valores vêm da API; o frontend só formata.
+
+| Bloco | Origem do valor |
 |---|---|
-| Frota | cartões por máquina (estado, velocidade, GNSS, vazão, pressão, tanque, "ao vivo"); mapa com posição atual e trilha. Campo ausente aparece como "—", nunca como 0; "(sem posição)" quando falta posição |
-| Reprodução | controle deslizante sobre o histórico. A posição vem da última amostra até o instante escolhido, sem extrapolação: antes do primeiro ponto, depois do último ou durante perda de GNSS a máquina não é desenhada; a trilha é quebrada onde falta posição |
-| Cobertura | seleção de máquinas e talhão; área bruta, única, excesso e região >= 2x; cobertura do talhão (coberta, não coberta, fora do limite); motivos de exclusão (sem posição, fora de trabalho, lacuna, precisão baixa) |
-| Alertas | lista com tipo, severidade (`info`/`warning`), intervalo, regra e evidências; atualização ao vivo; `analyst` pode recalcular (opcionalmente incluindo ML) |
-| Relatórios | agrupamento por máquina, propriedade, talhão ou operador, com período; exportação CSV. Custo/ha não aparece aqui: é calculado por `GET /metrics/{machine_id}?hourly_cost=...&product_cost_per_l=...`. Amostras sem a chave do grupo aparecem em "sem valor" |
-| Upload | tipo, origem, fuso, unidades e `machine_id`; envio sem gravar mostra o relatório de qualidade; só então gravar. ISOXML retorna o motivo da recusa |
-| ROI | premissas editáveis; custo/ha, benefício anual, payback, VPL, tornado (+-20%), pontos de equilíbrio e grade. O cenário de exemplo é ilustrativo. O botão de telemetria substitui duas premissas por valores da frota e mostra a origem |
-| Sobre / limites | escopo, limites e estado de cada adaptador; `admin` carrega ou apaga a demonstração simulada |
+| Mapa | `GET /operations/{id}/geometry`: talhão, área trabalhada, pendente, fora do talhão, trajetória e última posição com rumo |
+| Barra do talhão | Nome, área e progresso (`/status`); clima de `GET /operations/{id}/weather` (7.12). Sem dado: "Sem dados meteorológicos" |
+| Máquina | Nome do cadastro, operação, estado e conexão. O tempo de operação só conta com a conexão ativa; sem conexão, mostra o tempo até o último dado |
+| KPIs | Velocidade, rotação, carga do motor e combustível (% e litros pela capacidade cadastrada); em máquina elétrica, bateria (% e kWh). Sensor ausente: "—" e "não reportado" |
+| Missão e previsão | `mission`: área trabalhada / planejada, progresso, ETA no fuso da propriedade com faixa; sem ritmo confiável, "Indeterminada" e o motivo |
+| Autonomia | `autonomy`: autonomia estimada, tempo restante e o bloco de status (suficiente, apertada, insuficiente, indeterminado). Em vermelho aparece a nota de severidade crítica |
+| Consumo e produtividade | `consumption.avg` (L/h ou kW, média ponderada pelo tempo observado) e `mission.rate_ha_h`, com as últimas séries de 10 min |
+| Alertas | Alertas ativos da operação, críticos primeiro; cada linha abre a seção Alertas filtrada pela máquina |
 
-**Demonstração rápida (admin):** aba *Sobre / limites*, *Carregar demonstração SIMULADA*; explore Frota, Reprodução (SIM-03 perde GNSS), Cobertura, Alertas e ROI; encerre com *Apagar dados simulados*. Alternativamente, rode o perfil `sim` para dados ao vivo.
+Atualização: `/status` a cada 15 s e a mensagem WebSocket `operation_status`; geometria quando chega dado novo (no máximo a cada 20 s); clima a cada 10 min.
 
-O mapa de fundo é em branco por padrão (sem serviço externo); opcionalmente, defina `VITE_BASEMAP_TILES` na construção do frontend.
+**Mapa-base (decisão A).**
+- O alternador Mapa | Satélite usa provedores definidos por variável de ambiente na construção do frontend (`frontend/.env.example`). Os padrões são gratuitos e permitem uso comercial:
+  - OpenFreeMap (mapa; estilo escuro no tema escuro);
+  - EOX Sentinel-2 cloudless 2016 (satélite, CC BY 4.0, 10 m de resolução).
+- Se o mapa-base falhar, o mapa mostra um fundo liso com o aviso "Mapa-base indisponível", e as camadas continuam.
+- Sobre talhões simulados aparece "Local fictício: o talhão simulado não corresponde à imagem de fundo".
+- O navegador do usuário contata os servidores de tiles (IP e Referer): informe isso no aviso de privacidade ou hospede os tiles.
+
+| Variável | Padrão | Uso |
+|---|---|---|
+| `VITE_MAP_STYLE_URL` / `VITE_MAP_STYLE_URL_DARK` | OpenFreeMap `liberty` / `dark` | estilo vetorial do "Mapa"; vazio desliga |
+| `VITE_SATELLITE_TILES`, `_ATTRIBUTION`, `_MAXZOOM`, `_TILESIZE`, `_LABEL` | EOX 2016 | camada "Satélite" (XYZ); vazio desliga |
+| `VITE_BASEMAP_DEFAULT` | `map` | `map`, `satellite` ou `none` |
+| `VITE_BASEMAP_TILES` / `VITE_BASEMAP_ATTRIBUTION` | — | legado: raster como "Mapa" quando `VITE_MAP_STYLE_URL` não está definido |
+
+**Demonstração rápida (admin).**
+- **Dados gravados:** no painel Operação vazio (ou em *Sobre / limites*), carregue a demonstração SIMULADA. Explore Operação, Frota, Análises e Alertas, e encerre com *Apagar dados simulados*.
+- **Ao vivo:** registre as operações com `POST /demo/operations/load?scenarios=A,B,C&with_telemetry=false&start=<início>` e rode `simulator/publish.py --scenario A,B,C --start <início>`. Com um início no passado, o histórico até agora é publicado de imediato e o resto segue o relógio, então a operação aparece em andamento e conectada.
 
 ---
 
@@ -845,6 +897,48 @@ A união para o mapa (`/geometry`) só é montada quando pedida.
 
 Custo: a primeira chamada, ou a primeira depois de um descarte, custa o mesmo que o cálculo completo. A memória cresce com a operação, porque guarda as faixas por segmento (uma por segundo de trabalho) e as uniões. Medido pelo RSS marginal de cada operação adicional em cache: cerca de 40 MB com 5 h e 65 MB com 12 h do cenário A. Com o padrão de 8 operações, até cerca de 0,5 GB.
 
+### 7.12 Clima (`agrofleet/weather/`, `backend/app/weather_api.py`)
+
+O clima vem de provedores externos atrás de uma interface mínima (`Provider`: `observation`, `forecast`, `gate`, `attribution`). A ordem é `AGROFLEET_WEATHER_PROVIDERS` (padrão `inmet`): para a observação vale o primeiro provedor da lista que devolver dado, e o mesmo para a previsão. Nada é buscado na subida da API nem nos testes existentes; a busca só acontece quando um endpoint de clima é chamado.
+
+**Três tipos de valor, sempre identificados.**
+
+| `kind` | Bloco | O que é | Provedor |
+|---|---|---|---|
+| `observation` | `observation` | leitura horária REAL de uma estação automática, com código, nome, UF, coordenadas e distância até o ponto | INMET |
+| `model` | `observation` | estimativa de modelo numérico para o ponto (grade de alguns km), não é sensor; rótulo "Open-Meteo (modelo)" | Open-Meteo (só desenvolvimento) |
+| `forecast` | `forecast` | previsão do período atual do dia local (manhã, tarde, noite ou dia) | INMET (por município) ou MET Norway (modelo, por ponto) |
+
+**Provedores.**
+- **INMET** (padrão). Três rotas, nenhuma com documentação oficial publicada (verificadas em 2026-11-20; podem mudar sem aviso):
+  - observação sem token: `apiprevmet3.inmet.gov.br/estacao/proxima/{ibge}`, a estação automática mais próxima do município e a última leitura horária;
+  - observação com token (`AGROFLEET_INMET_TOKEN`): `apitempo.inmet.gov.br/token/estacao/{d0}/{d1}/{estação}/{token}`, com a estação automática operante mais próxima do PONTO no catálogo público `/estacoes/T`, até `AGROFLEET_INMET_MAX_STATION_KM`. Não precisa do código IBGE. Token inválido ou cancelado volta como HTTP 200 com o texto `CHAVE INVÁLIDA!`, tratado como `no_token`, e a busca cai na rota pública;
+  - previsão: `apiprevmet3.inmet.gov.br/previsao/{ibge}`. Cinco dias; hoje e amanhã têm manhã, tarde e noite, os demais um bloco único. A resposta tem cerca de 270 KB, quase tudo ícones em base64; os ícones são descartados na leitura (lista branca de campos) e nunca ficam em cache.
+- **MET Norway** (opcional, desligado por padrão): `api.met.no/weatherapi/locationforecast/2.0/compact`. Previsão de modelo para qualquer ponto. Respeita os termos: User-Agent identificador, coordenadas com 2 casas, nenhuma repetição antes do `Expires` (validade calculada como `Expires − Date` sobre o nosso relógio) e revalidação com `If-Modified-Since`. O resumo em português traduz o `symbol_code` do próprio provedor.
+- **Open-Meteo** (só desenvolvimento): condições "atuais", que são saída de modelo a cada 15 min. Só roda com `AGROFLEET_ENV=dev` e `AGROFLEET_WEATHER_ALLOW_NONCOMMERCIAL=1`, porque a API gratuita é exclusivamente não comercial; a resposta sai com `non_commercial: true`. Uma implantação que contrate o plano pago define `OPENMETEO_BASE_URL=https://customer-api.open-meteo.com` e `OPENMETEO_API_KEY`; com a chave, o provedor vale em qualquer ambiente e `non_commercial` fica `false`. Fora disso, aparece só como motivo `not_allowed`.
+
+**O que cada valor significa (INMET).**
+- `observed_at`: `DT_MEDICAO` + `HR_MEDICAO`, ambos em UTC (13:00 UTC = 10:00 em Brasília). A leitura de uma hora costuma ser publicada em até ~50 min.
+- `temperature_c` (`TEM_INS`), `humidity_pct` (`UMD_INS`), `wind_dir_deg` (`VEN_DIR`, de onde sopra), `precipitation_mm` (`CHUVA`, total da hora), `pressure_hpa` (`PRE_INS`, no nível da estação, não do mar), `dew_point_c` (`PTO_INS`), `temp_max_c`/`temp_min_c` (extremos da hora).
+- `wind_speed_kmh` e `wind_gust_kmh`: `VEN_VEL` e `VEN_RAJ` chegam em m/s e são convertidos (× 3,6).
+- `radiation_kj_m2` (`RAD_GLO`, total da hora) e `radiation_w_m2` (o mesmo ÷ 3,6, média da hora).
+- `distance_km`: calculada por nós (haversine) do ponto consultado até a estação (`distance_basis: "point"`). Sem coordenadas do ponto, usa a distância que o INMET informa a partir do município (`"inmet_municipality"`). Estação mais longe que `AGROFLEET_INMET_MAX_STATION_KM` não é usada (`no_station_in_range`).
+- Dado de estação automática é **bruto e não validado** pelo INMET (o próprio instituto avisa); a observação traz essa nota em `note`.
+- Ausência: `9999`, `-9999`, `"Null"`, `null`, `""` e `"*"` viram `null`, nunca 0. Nebulosidade e "condição do céu" só existem no `forecast.summary`; a observação automática não mede céu e o sistema não deriva.
+- Previsão INMET por município é textual ou por faixa: `temp_min_c`/`temp_max_c`, `humidity_min_pct`/`humidity_max_pct`, `wind_dir` (ex.: "N-NW") e `wind_intensity` (ex.: "Fracos"). Os campos pontuais `temperature_c`, `humidity_pct` e `wind_speed_kmh` ficam `null` (só o MET Norway os preenche). `days` lista os dias restantes.
+
+**Período da previsão.** Data e hora locais no fuso da propriedade: antes das 12 h, manhã (de madrugada, a manhã que vem); de 12 h a 17 h, tarde; a partir das 18 h, noite. Do terceiro dia em diante o INMET não divide o dia (`period: "dia"`). Se a previsão em cache não cobrir a data local de hoje, o bloco fica vazio (`no_data`).
+
+**Ponto e município da operação.** Ponto: centroide da geometria do talhão (mesma origem da operação); senão, a última posição de telemetria da máquina dentro da janela da operação (`location.source`: `field_centroid` ou `last_position`). Município: `ibge_municipality` da propriedade da operação (ou da máquina), senão `AGROFLEET_WEATHER_IBGE`; sem nenhum dos dois, as rotas INMET por município devolvem `no_municipality`. A propriedade simulada `PROP-SIM-SC` usa `5206206` (Cristalina-GO): a origem fictícia do simulador (-16,70; -47,60) cai nesse município pela malha municipal do IBGE. Em operação simulada, `location.fictitious: true` e a nota "Talhão simulado em local fictício: o clima mostrado é o real deste ponto, não do talhão."
+
+**Idade e `stale`.** A idade vem do horário da medição contra o relógio do servidor AgroFleet, nunca do cabeçalho `Date` do provedor (o do INMET já foi visto ~18 min atrasado). Acima de `AGROFLEET_WEATHER_MAX_AGE_S` (2 h), a observação continua na resposta com `stale: true` e um motivo `stale`. A idade é recalculada a cada resposta, mesmo com o dado em cache.
+
+**Cache e frequência.** Cache em memória por provedor e recurso: observação por município ou estação (30 min), previsão por município ou ponto arredondado (3 h), catálogo de estações (24 h). Falhas ficam em cache por 120 s, para não insistir num provedor fora do ar. Uma busca por chave de cada vez; as requisições simultâneas esperam o mesmo resultado. Observação e previsão são buscadas em paralelo. A frequência é baixa de propósito: em 2026 o INMET passou a se opor à cópia automatizada em massa da sua base, e este cliente faz no máximo uma busca por município ou estação a cada TTL, sem varredura. Contadores em `/health` (`weather.cache`), sem nenhuma busca.
+
+**Resposta e falhas.** `status`: `ok` com observação e previsão, `partial` com só uma, `unavailable` sem nenhuma (com `message: "Sem dados meteorológicos"`). `reasons[]` traz `{provider, code, message}` com os códigos `no_token`, `no_station_in_range`, `http_error`, `timeout`, `stale`, `no_data`, `disabled`, `no_municipality` e `not_allowed`. Falha do provedor nunca vira erro HTTP. `attribution` junta os créditos dos provedores usados ("Fonte: INMET", "Data from MET Norway", "Weather data by Open-Meteo.com") e `attributions[]` traz texto, link e licença de cada um, para exibir junto do dado. `cached` é `true` quando nada foi buscado nesta resposta; `fetched_at` é a hora da busca mais antiga usada.
+
+**HTTP.** Só `urllib` da biblioteca padrão (nenhuma dependência nova), tempo limite `AGROFLEET_WEATHER_TIMEOUT_S`, User-Agent descritivo e genérico, sem dado pessoal. O INMET fecha a conexão sem resposta para o User-Agent padrão do curl. A função de busca é injetável; os testes (`tests/test_weather.py`) nunca acessam a rede.
+
 ---
 
 ## 8. Validação, métricas e testes
@@ -868,7 +962,7 @@ Todos os números abaixo vêm de saídas de notebooks, testes ou de `experiments
 
 Caso mínimo (2 passadas, 495 m, barra 24 m, espaçamento 22 m): esperado bruta 23 760 m², sobreposição 990 m², única 22 770 m²; obtido 23 760 / 980 / 22 780.
 
-Frota simulada, medida com `coverage()` sobre `simulate()` depois da faixa por trecho contínuo (Etapa 4). As saídas gravadas no notebook 02 ainda são anteriores à correção e serão regeneradas na Etapa 9:
+Frota simulada, medida com `coverage()` sobre `simulate()` depois da faixa por trecho contínuo (Etapa 4). As saídas do notebook 02 foram regeneradas na Etapa 9 e coincidem com esta tabela:
 
 | Máquina | Bruta est. (ha) | Bruta real | Única est. | Única real | Sobrep. est. | Sobrep. real | Erro bruta | Erro única |
 |---|---|---|---|---|---|---|---|---|
@@ -1060,6 +1154,14 @@ Origem declarada e visível; veredito de qualidade lido; largura efetiva calibra
 - Após recriar o `backend`, reiniciar o `frontend` (nginx resolve o upstream na subida).
 - TimescaleDB não usado; séries muito longas podem exigir particionamento.
 
+**Clima (7.12).**
+- As rotas do INMET não têm documentação oficial e são o backend do próprio portal: podem mudar ou ser bloqueadas sem aviso. A rota com token só existe para quem tem Acordo de Cooperação Técnica com o INMET, e em 2026 os tokens de empresas privadas foram cancelados.
+- A estação mais próxima pode estar a dezenas de km e em outro relevo; a leitura vale para a estação, não para o talhão. Dado de estação automática é bruto, sem validação do INMET.
+- A previsão do INMET é por município, textual e por faixa, sem valores pontuais. A do MET Norway e as condições do Open-Meteo são modelo, não medição.
+- Os campos do catálogo `/estacoes/T` e da rota com token foram implementados pelos nomes já vistos na rota pública e no catálogo, sem um token válido para conferir a resposta real.
+- Cache por processo: reiniciar a API esvazia o cache; vários processos fazem buscas independentes.
+- A conversão ponto → município não é automática: o código IBGE vem do cadastro da propriedade ou de `AGROFLEET_WEATHER_IBGE`.
+
 **Reprodutibilidade.** `playwright`, `matplotlib`, `nbconvert`, `ipykernel` e `openpyxl` estão sem versão fixada em `requirements-dev.txt`; não há `pyproject.toml`; os notebooks foram executados com a semente 7 e não foram verificados com outras sementes.
 
 **Uso responsável.** Não usar alertas ou estimativas como única base para decisão de segurança, cobrança entre terceiros, conformidade regulatória ou laudo.
@@ -1080,6 +1182,10 @@ Origem declarada e visível; veredito de qualidade lido; largura efetiva calibra
 - **Dados:** todos os dados do repositório (`sample_data/`, `payload_examples/`) são sintéticos ou fictícios, gerados pelo simulador ou escritos à mão; nenhum dado de terceiros está incluído.
 - **Dependências:** bibliotecas de terceiros (FastAPI, SQLAlchemy, pandas, numpy, scikit-learn, shapely, pyproj, React, MapLibre GL JS, entre outras) mantêm suas próprias licenças; ver `requirements*.txt` e `frontend/package.json`.
 - **Imagens PostGIS e Mosquitto:** imagens oficiais, com licenças próprias.
+- **Clima (consultado em tempo de execução, não versionado no repositório):**
+  - **INMET:** dados públicos de órgão federal (MAPA). O Decreto 8.777/2016 (Política de Dados Abertos, Art. 4 com redação do Decreto 9.903/2019) prevê livre utilização com crédito da fonte; o INMET não publica licença explícita nem termo de uso. Exibir sempre "Fonte: INMET" e nunca apresentar o dado como validado. O acesso automatizado por token exige Acordo de Cooperação Técnica, e em 2026 o INMET declarou oposição à cópia automatizada e não descartou cobrança. Antes de uso comercial, pedir confirmação por escrito ao INMET.
+  - **Open-Meteo:** dados sob CC BY 4.0, com crédito "Weather data by Open-Meteo.com" e link junto do dado. A API gratuita é só para uso não comercial; uso comercial exige plano pago (endpoint `customer-api.open-meteo.com` com chave). O código do servidor é AGPLv3.
+  - **MET Norway:** dados sob CC BY 4.0 e NLOD 2.0, que permitem uso comercial, com crédito "Data from MET Norway"; os termos de serviço exigem User-Agent identificador e respeito ao `Expires`.
 
 ---
 
@@ -1097,6 +1203,7 @@ Origem declarada e visível; veredito de qualidade lido; largura efetiva calibra
 | `ModuleNotFoundError: agrofleet` | `PYTHONPATH` não definido | `export PYTHONPATH=.` na raiz |
 | `compose restart mosquitto` falha | arquivo de senhas pré-existente (corrigido em `entrypoint.sh` com `rm -f` antes de gerar) | atualizar o repositório e recriar o contêiner |
 | Mensagens perdidas em rajada | `max_queued_messages` padrão do Mosquitto | ver 8.7; publicar com ritmo (`--speedup`) |
+| Clima com "Sem dados meteorológicos" | propriedade sem `ibge_municipality`, provedor fora do ar ou bloqueado | ler `reasons` da resposta; cadastrar o município ou definir `AGROFLEET_WEATHER_IBGE`; falhas ficam em cache por 120 s |
 
 ---
 

@@ -6,6 +6,8 @@ ficam adiante do relógio quando N > 1: é um relógio simulado). O processo só
 
 --scenario fleet (padrão) publica a frota original de 4 pulverizadores. --scenario A,B,C publica as operações da
 Etapa 3; no cenário C a entrega segue a agenda de falhas de enlace (perda, reenvio em rajada, latência, duplicação).
+Com --start no PASSADO (e --speedup 1), o que já "aconteceu" até agora é publicado de imediato (atraso acumulado) e o
+restante segue o relógio real: a operação aparece em andamento desde o primeiro minuto.
 Para que as operações apareçam com cadastro, registre-as antes com o MESMO início:
   POST /demo/operations/load?scenarios=A,B&with_telemetry=false&start=<início impresso por este script>
 """
@@ -69,7 +71,11 @@ def main():
     print(f"cenário={a.scenario} início={start.isoformat()} (dados SIMULADOS)", flush=True)
     while a.repeat == 0 or n_run < a.repeat:
         plan = schedule(a.scenario, a.seed + n_run, start, a.max_seconds)
-        t0 = time.monotonic()
+        # início no passado (só em tempo real): o atraso acumulado sai de imediato, o resto segue o relógio
+        behind_s = max((datetime.now(timezone.utc) - start).total_seconds(), 0.0) if a.speedup == 1 else 0.0
+        if behind_s > 0:
+            print(f"início {behind_s / 60:.0f} min no passado: publicando o atraso acumulado de imediato", flush=True)
+        t0 = time.monotonic() - behind_s
         for i, (due_s, p) in enumerate(plan):
             delay = due_s / a.speedup - (time.monotonic() - t0)
             if delay > 0:

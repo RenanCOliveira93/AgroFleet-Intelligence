@@ -70,8 +70,8 @@ export function RoiTab({ ctx }: { ctx: Ctx }) {
         {out.sensitivity && <><h3>Sensibilidade (±20%, uma premissa por vez)</h3><Tornado rows={out.sensitivity.tornado} base={out.sensitivity.base_net_benefit_per_year} /></>}
         {out.break_even && <><h3>Ponto de equilíbrio (benefício = 0)</h3><ul>{Object.entries(out.break_even as Record<string, number | null>).map(([k, v]) => <li key={k}>{NAMES[k] ?? k}: {v === null ? "não cruza zero na faixa avaliada" : fmt(v, 2)} (atual: {fmt(inp[k], 2)})</li>)}</ul></>}
         {out.grid && <><h3>Grade: área por ano × custo do produto → benefício líquido/ano</h3>
-          <table className="grid" data-testid="roi-grid"><thead><tr><th></th>{out.grid.xs.map((x: number) => <th key={x}>{fmt(x, 0)} ha</th>)}</tr></thead>
-            <tbody>{out.grid.ys.map((y: number, i: number) => <tr key={y}><th>{fmt(y, 0)} {cur}/ha</th>{out.grid.net_benefit_per_year[i].map((v: number | null, j: number) => <td key={j} className={v !== null && v < 0 ? "neg" : "pos"}>{fmtMoney(v, cur)}</td>)}</tr>)}</tbody></table></>}
+          <div className="table-wrap"><table className="grid" data-testid="roi-grid"><thead><tr><th></th>{out.grid.xs.map((x: number) => <th key={x}>{fmt(x, 0)} ha</th>)}</tr></thead>
+            <tbody>{out.grid.ys.map((y: number, i: number) => <tr key={y}><th>{fmt(y, 0)} {cur}/ha</th>{out.grid.net_benefit_per_year[i].map((v: number | null, j: number) => <td key={j} className={v !== null && v < 0 ? "neg" : "pos"}>{fmtMoney(v, cur)}</td>)}</tr>)}</tbody></table></div></>}
         <h3>Limites</h3><ul>{r.caveats.map((c: string) => <li key={c}>{c}</li>)}</ul>
       </div>)}
     </section>

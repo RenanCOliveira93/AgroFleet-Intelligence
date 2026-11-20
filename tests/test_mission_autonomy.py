@@ -10,9 +10,9 @@ import pandas as pd
 import pytest
 from shapely.geometry import box, mapping
 
-from agrofleet.analytics.autonomy import AutonomyConfig, Remaining, autonomy, level_class
+from agrofleet.analytics.autonomy import AutonomyConfig, Remaining, autonomy, level_class, time_weighted_mean
 from agrofleet.analytics.frame import to_frame
-from agrofleet.analytics.mission import mission
+from agrofleet.analytics.mission import MissionConfig, mission, operation_consumption, operation_frame
 from agrofleet.registry import MachineProfile, OperationPlan
 from agrofleet.simulator.operations import (run_scenarios, scenario_a, scenario_b, simulate_operation)
 from agrofleet.simulator.fleet import DEFAULT_START
@@ -335,6 +335,73 @@ def test_cenario_c_lacuna_aparece_como_sem_dado():
 
 
 # ---------------------------------------------------------------------------------------------------------------
+# consumo médio da operação (Etapa 8): média ponderada pelo tempo observado dos intervalos de 10 min
+# ---------------------------------------------------------------------------------------------------------------
+
+def _b(obs_h, fuel=None, power=None):
+    return {"observed_h": obs_h, "fuel_rate_lph": fuel, "battery_power_kw": power, "complete": True}
+
+
+def test_consumo_diesel_ponderado_pelo_tempo_observado():
+    # 30 L/h por 1/6 h, 20 L/h por 1/12 h → (5 + 5/3) / (1/4) = 26,67 L/h (média simples daria 25)
+    c = operation_consumption([_b(1 / 6, fuel=30.0), _b(1 / 12, fuel=20.0)], "diesel")
+    assert c["source"] == "fuel_rate_lph" and c["unit"] == "L/h" and c["reason"] is None
+    assert c["avg"] == pytest.approx(80 / 3) and c["observed_h"] == pytest.approx(0.25) and c["intervals"] == 2
+    assert "ponderada pelo tempo observado" in c["basis"]
+
+
+def test_consumo_eletrico_usa_potencia_e_ignora_combustivel():
+    c = operation_consumption([_b(1 / 6, fuel=99.0, power=40.0), _b(1 / 6, power=-10.0)], "electric")   # recarga
+    assert c["source"] == "battery_power_kw" and c["unit"] == "kW"
+    assert c["avg"] == pytest.approx(15.0) and "Potência líquida" in c["basis"]
+
+
+def test_consumo_intervalos_sem_taxa_ou_sem_observacao_ficam_fora():
+    s = [_b(1 / 6, fuel=30.0), _b(1 / 6), _b(0.0, fuel=500.0), _b(1 / 6, fuel=None, power=12.0), _b(1 / 12, fuel=36.0)]
+    c = operation_consumption(s, "diesel")
+    assert c["intervals"] == 2 and c["observed_h"] == pytest.approx(0.25)     # nada é preenchido nem zerado
+    assert c["avg"] == pytest.approx((30 / 6 + 36 / 12) / 0.25)
+
+
+def test_consumo_sem_taxa_reportada_e_nulo_com_motivo():
+    c = operation_consumption([_b(1 / 6), _b(1 / 6)], "diesel")
+    assert c["avg"] is None and c["observed_h"] == 0 and c["reason"] == "Máquina não reporta consumo."
+    assert c["source"] == "fuel_rate_lph"                       # informa qual taxa faltou
+    e = operation_consumption([], "electric")
+    assert e["avg"] is None and e["reason"] == "Sem telemetria no período da operação."
+    u = operation_consumption([_b(1 / 6)], "unknown")
+    assert u["source"] is None and u["unit"] is None and u["avg"] is None and u["reason"]
+
+
+def test_consumo_fonte_nao_cadastrada_usa_a_taxa_reportada():
+    c = operation_consumption([_b(1 / 6, power=20.0), _b(1 / 6, power=30.0), _b(1 / 6, fuel=10.0)], None)
+    assert c["source"] == "battery_power_kw" and c["avg"] == pytest.approx(25.0) and "não cadastrada" in c["basis"]
+
+
+def _sample_mean(df, op, col, q):
+    g = operation_frame(df, op)
+    return time_weighted_mean(g, col, q, MissionConfig().coverage.max_gap_s)
+
+
+def test_consumo_igual_a_media_amostra_a_amostra_cenario_a(run_a):
+    full, part, df = run_a
+    m = mission(df, part.operation, full.field_lonlat)
+    c = operation_consumption(m.series, "diesel")
+    ref, cover = _sample_mean(df, part.operation, "fuel_rate_lph", "q_fuel_rate")
+    assert c["avg"] == pytest.approx(ref, rel=2e-3)                       # só difere na amostra de fronteira
+    assert c["observed_h"] == pytest.approx(cover / 3600, rel=2e-3)
+
+
+def test_consumo_igual_a_media_amostra_a_amostra_cenario_b():
+    r = simulate_operation(scenario_b(), max_seconds=1.0 * 3600)
+    df = to_frame(r.points)
+    m = mission(df, r.operation, r.field_lonlat)
+    c = operation_consumption(m.series, r.machine.energy_source)
+    ref, _ = _sample_mean(df, r.operation, "battery_power_kw", "q_battery")
+    assert c["source"] == "battery_power_kw" and c["avg"] == pytest.approx(ref, rel=5e-3)
+
+
+# ---------------------------------------------------------------------------------------------------------------
 # API: /operations/{id}/status e /geometry
 # ---------------------------------------------------------------------------------------------------------------
 
@@ -376,6 +443,13 @@ def test_api_status_reproduz_o_calculo_puro(api_ops):
     assert len(a["series"]) == 9 and all(s["fuel_rate_lph"] for s in a["series"])
     b = c.get("/operations/OP-SIM-B/status", params={"as_of": AS_OF}, headers=h["viewer"]).json()
     assert b["autonomy"]["status"] == "red" and b["autonomy"]["unit"] == "kWh"
+    # consumo médio (Etapa 8): calculado no backend a partir da mesma série
+    ca, cb = a["consumption"], b["consumption"]
+    assert ca == operation_consumption(m.series, "diesel")
+    assert ca["source"] == "fuel_rate_lph" and ca["unit"] == "L/h" and ca["avg"] > 0 and ca["reason"] is None
+    assert ca["avg"] == pytest.approx(_sample_mean(df, r.operation, "fuel_rate_lph", "q_fuel_rate")[0], rel=2e-3)
+    assert ca["observed_h"] == pytest.approx(sum(s["observed_h"] for s in a["series"]), rel=1e-9)
+    assert cb["source"] == "battery_power_kw" and cb["unit"] == "kW" and cb["avg"] is not None
 
 
 def test_api_status_sem_as_of_dado_antigo_fica_cinza(api_ops):

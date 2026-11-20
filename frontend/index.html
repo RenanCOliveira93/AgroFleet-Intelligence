@@ -3,8 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" href="data:," />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0A1412" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'><rect width='40' height='40' rx='9' fill='%230A1412'/><path d='M5 35c-2.5-7.5-.5-15.5 6-19.5 1.2 7.6-.6 14-6 19.5z' fill='%232E9E2A'/><path d='M9 34C9 17 19.5 6 36 5c.6 17.5-10.4 28.6-27 29z' fill='%234ADE3B'/><path d='M10.5 32.5C16 24 22.5 16.5 31 10' fill='none' stroke='%230A1412' stroke-width='2.2' stroke-linecap='round'/></svg>" />
     <title>AgroFleet Intelligence</title>
+    <script>
+      /* Tema antes da 1ª pintura (sem "flash"): mesma chave e valores de src/theme.ts; auto = sem atributo. */
+      try { var t = localStorage.getItem("agf-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+    </script>
+    <style>
+      html { background: #0A1412; }
+      html[data-theme="light"] { background: #F3EEE3; }
+      @media (prefers-color-scheme: light) { html:not([data-theme]) { background: #F3EEE3; } }
+    </style>
   </head>
   <body>
     <div id="root"></div>
