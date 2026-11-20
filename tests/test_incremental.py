@@ -111,3 +111,18 @@ def test_mudanca_de_cadastro_ou_as_of_anterior_recalcula(run_a):
     assert cache.stats["resets"] == 1 and "cadastro" in cache.stats["last_reset"]
     check(df[df["ts"] <= DEFAULT_START + timedelta(minutes=40)], r2, cache)     # reprodução de um instante anterior
     assert cache.stats["resets"] == 2
+
+
+def test_operacao_com_lacuna_de_meses_nao_e_quadratica(run_a):
+    """Operação deixada "ativa" no cadastro: dado de março e de novo 4 meses depois. A série tem ~17 mil intervalos
+    (quase todos vazios); o custo por intervalo não pode depender do tamanho do quadro nem da série anterior."""
+    import pandas as pd
+    r, df = run_a
+    a = df[df["ts"] <= DEFAULT_START + timedelta(minutes=40)]
+    b = a.copy()
+    b["ts"] = b["ts"] + pd.Timedelta(days=120)
+    both = pd.concat([a, b], ignore_index=True)
+    t = time.perf_counter()
+    full, inc = check(both, r, MissionCache())
+    assert time.perf_counter() - t < 30
+    assert len(full.series) > 17000 and full.no_data_h > 2800

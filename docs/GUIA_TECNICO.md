@@ -834,6 +834,7 @@ A união para o mapa (`/geometry`) só é montada quando pedida.
 - cenário C montado pela ordem de chegada (perda, 4 min guardados e reenviados, latência de 25 s fora de ordem, reentregas), sem descartar o cache;
 - chegada tardia antes do corte (recalcula);
 - cadastro alterado e `as_of` anterior ao corte (recalcula);
+- operação com 4 meses de lacuna (17 mil intervalos, custo linear);
 - teste de carga de 5 h (8.7.1).
 
 **Backend** (`ops_cache.py`, por processo, LRU de `AGROFLEET_OPS_CACHE_SIZE` operações):

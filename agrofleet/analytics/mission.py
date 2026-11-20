@@ -111,6 +111,7 @@ class _BucketCtx:
     B: float; span: float; nb: int; seg: object; seg_t: np.ndarray; fld: object
     tsec: np.ndarray; dt: np.ndarray; valid: np.ndarray; states: np.ndarray
     g: pd.DataFrame; t_start: pd.Timestamp; first_off: float; max_gap_s: float
+    gts: np.ndarray | None = None       # g["ts"] em datetime64 (ordenado): fatia por busca binária
 
 
 def bucket_entry(c: _BucketCtx, i: int, cum, prev_ha: float):
@@ -119,10 +120,13 @@ def bucket_entry(c: _BucketCtx, i: int, cum, prev_ha: float):
     a, b = i * c.B, min((i + 1) * c.B, c.span)
     if b <= a:
         return None, cum
-    sm = (c.seg_t >= a) & (c.seg_t < b) if i < c.nb - 1 else (c.seg_t >= a)
+    # tudo ordenado no tempo: fatias por busca binária (as mesmas linhas, na mesma ordem, de uma máscara booleana;
+    # a máscara sobre o quadro inteiro custava O(intervalos × amostras))
+    s0 = int(np.searchsorted(c.seg_t, a, "left"))
+    s1 = int(np.searchsorted(c.seg_t, b, "left")) if i < c.nb - 1 else len(c.seg_t)
     new = 0.0
-    if sm.any():
-        piece = unary_union(run_swaths(subset(c.seg, sm)))
+    if s1 > s0:
+        piece = unary_union(run_swaths(subset(c.seg, slice(s0, s1))))
         if c.fld is not None:
             piece = piece.intersection(c.fld)
         if cum is not None and not piece.is_empty:
@@ -132,13 +136,14 @@ def bucket_entry(c: _BucketCtx, i: int, cum, prev_ha: float):
             fresh = piece
         new = ha(fresh.area)
         cum = piece if cum is None else unary_union([cum, piece])
-    dt, valid = c.dt, c.valid
-    im = (c.tsec >= a) & (c.tsec < b)
-    obs = float(dt[im & valid].sum())
-    nodata = float(dt[im & ~valid & (dt > 0)].sum()) + (max(min(c.first_off, b) - a, 0.0) if i == 0 else 0.0)
-    wk = float(dt[im & valid & (c.states == "working")].sum())
+    k0, k1 = int(np.searchsorted(c.tsec, a, "left")), int(np.searchsorted(c.tsec, b, "left"))
+    dt, valid, st = c.dt[k0:k1], c.valid[k0:k1], c.states[k0:k1]
+    obs = float(dt[valid].sum())
+    nodata = float(dt[~valid & (dt > 0)].sum()) + (max(min(c.first_off, b) - a, 0.0) if i == 0 else 0.0)
+    wk = float(dt[valid & (st == "working")].sum())
     t0, t1 = c.t_start + pd.Timedelta(seconds=a), c.t_start + pd.Timedelta(seconds=b)
-    gb = c.g[(c.g["ts"] >= t0) & (c.g["ts"] < t1)]
+    gts = c.gts if c.gts is not None else c.g["ts"].values
+    gb = c.g.iloc[int(np.searchsorted(gts, t0.to_datetime64(), "left")):int(np.searchsorted(gts, t1.to_datetime64(), "left"))]
     fuel, _ = time_weighted_mean(gb, "fuel_rate_lph", "q_fuel_rate", c.max_gap_s)
     power, _ = time_weighted_mean(gb, "battery_power_kw", "q_battery", c.max_gap_s)
     return {
@@ -223,15 +228,19 @@ def mission(df: pd.DataFrame, op: OperationPlan, field_lonlat: dict | None = Non
     span = (last - t_start).total_seconds()
     ctx = _BucketCtx(B=B, span=span, nb=max(int(np.ceil(span / B)), 1), seg=seg, seg_t=seg.t0 - t_start.timestamp(),
                      fld=fld, tsec=tsec, dt=dt, valid=valid, states=states, g=g, t_start=t_start, first_off=first_off,
-                     max_gap_s=cfg.coverage.max_gap_s)
+                     max_gap_s=cfg.coverage.max_gap_s, gts=g["ts"].values)
     if cache is not None:
         res.series, cum = cache.series_prefix(ctx, bucket_entry)      # intervalos congelados (idênticos ao cálculo completo)
     else:
         cum = None
+    acc = 0.0                                  # soma corrente (a soma refeita a cada intervalo era quadrática)
+    for s_ in res.series:
+        acc += s_["new_ha"]
     for i in range(len(res.series), ctx.nb):
-        e, cum = bucket_entry(ctx, i, cum, sum(s["new_ha"] for s in res.series))
+        e, cum = bucket_entry(ctx, i, cum, acc)
         if e is not None:
             res.series.append(e)
+            acc += e["new_ha"]
 
     # ---- ritmo, faixa e ETA ----------------------------------------------------------------------------------
     k = max(int(np.ceil(cfg.rate_window_min / cfg.bucket_min)), 1)

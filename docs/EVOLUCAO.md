@@ -226,7 +226,7 @@ Executadas juntas, a pedido. A interface recebeu apenas uma adição mínima (no
 | `backend/app/op_alerts_service.py`, `agrofleet/analytics/op_alerts.py` | Correção do replay (acima); avaliação reaproveita o cálculo do status. |
 | `backend/app/config.py`, `db.py`, `main.py` | `AGROFLEET_STATUS_INTERVAL_S`, `AGROFLEET_OPS_CACHE_SIZE` (8); `load_frame(ingested_since=)`; contadores do cache em `/health`. |
 | `scripts/bench_operations.py` (novo) | Teste de carga; resultados em `experiments/bench_operations.json` (SQLite) e `bench_operations_postgis.json`. |
-| `tests/test_incremental.py` (5), `tests/test_streaming.py` (8), `tests/test_op_alerts.py` (+4), `tests/test_infra.py` (+1) | Igualdade incremental × completo, cache do backend, WebSocket e correção do replay. |
+| `tests/test_incremental.py` (6), `tests/test_streaming.py` (8), `tests/test_op_alerts.py` (+4), `tests/test_infra.py` (+1) | Igualdade incremental × completo, cache do backend, WebSocket e correção do replay. |
 | `docs/GUIA_TECNICO.md` | 2.2, 4.3, 5.4, 7.9, 7.10, 7.11 (novo), 8.7.1 (novo) e 10. |
 
 **Antes e depois** (cenário A, 120 ha)
@@ -250,7 +250,7 @@ Executadas juntas, a pedido. A interface recebeu apenas uma adição mínima (no
 
 | Suíte | Resultado |
 |---|---|
-| `pytest` (unitários + API) | **231/231** (214 anteriores, sem alteração de asserções, + 17 novos) |
+| `pytest` (unitários + API) | **232/232** (214 anteriores, sem alteração de asserções, + 18 novos) |
 | `pytest -m infra` | **6/6** (+1: MQTT → PostGIS → missão incremental → WebSocket `operation_status`, igual ao cálculo completo) |
 | `tsc --noEmit` / `vitest` | OK / 12/12 (frontend não mudou) |
 | Teste de carga 5 h (SQLite e PostGIS) | resultado com cache igual ao completo; números acima e em `GUIA_TECNICO.md` 8.7.1 |
@@ -261,4 +261,5 @@ Executadas juntas, a pedido. A interface recebeu apenas uma adição mínima (no
 - **Amostragem irregular:** com dado real de amostragem irregular, o dt mediano pode oscilar e descartar o cache mais vezes. O resultado continua correto; só fica mais lento. Não medido com dado real.
 - **Escopo do teste de carga:** uma máquina, um computador e PostGIS emulado; muitas máquinas simultâneas não foram medidas. Cache e laço ao vivo continuam em um processo.
 - **Tamanho da mensagem:** `operation_status` tem cerca de 11 KB com 5 h; com muitas operações e clientes, vale filtrar por operação (Etapa 8, quando a tela consumir).
+- **Operação com lacuna de meses:** uma operação deixada "ativa" no cadastro por meses (achado ao recarregar a demo sobre dados de outro dia) gera um intervalo de 10 min para cada trecho do período: 36 mil intervalos em 8 meses. A soma acumulada era quadrática e cada intervalo filtrava o quadro inteiro, e a carga levou 386 s. Corrigido com soma corrente e busca binária, sem mudar o resultado, e testado. O status desse caso fica em 7,7 s frio e 1,3 s quente, e o restante é o tamanho da resposta. Resumir a série na tela (Etapa 8) e encerrar operações no cadastro resolvem.
 - **Alertas previstos e não implementados:** "consumo anormal" e "saída da área planejada", previstos no plano da Etapa 5, não foram implementados, e isso não foi registrado na Etapa 5.

@@ -204,13 +204,17 @@ class MissionCache:
         """Intervalos congelados da série (0..K−1) e a união acumulada ao fim deles. Calcula os que faltam."""
         if self.K >= ctx.nb:                                  # dado truncado no corte (``as_of``): sem atalho
             return [], None
+        acc = 0.0                                             # mesma soma corrente do cálculo completo
+        for s in self.series:
+            acc += s["new_ha"]
         while len(self.series) < self.K:
             i = len(self.series)
-            e, cum = bucket_fn(ctx, i, self.cum, sum(s["new_ha"] for s in self.series))
+            e, cum = bucket_fn(ctx, i, self.cum, acc)
             if e is None:
                 self.reset("intervalo congelado vazio")
                 return [], None
             self.series.append(e)
             self.cum = cum
+            acc += e["new_ha"]
         self.stats["frozen_buckets"] = len(self.series)
         return [dict(e) for e in self.series], self.cum

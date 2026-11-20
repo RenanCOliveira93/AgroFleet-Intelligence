@@ -117,7 +117,7 @@ def swath_polygons(s: Segments) -> list[Polygon]:
 
 
 def subset(s: Segments, mask: np.ndarray) -> Segments:
-    """Segmentos selecionados por máscara booleana (mesma projeção)."""
+    """Segmentos selecionados por máscara booleana ou fatia (mesma projeção)."""
     return Segments(s.x0[mask], s.y0[mask], s.x1[mask], s.y1[mask], s.w[mask], s.machine[mask], s.t0[mask],
                     excluded=dict(s.excluded), proj=s.proj, idx=None if s.idx is None else s.idx[mask])
 
