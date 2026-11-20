@@ -31,6 +31,7 @@ from agrofleet.analytics.metrics import filter_period, machine_metrics, report
 from agrofleet.quality import assess
 from agrofleet.schema import ENGINE_ENERGY_FIELDS, SCHEMA_VERSION
 from agrofleet.simulator.fleet import simulate
+from agrofleet.weather import WeatherService
 
 from .auth import ROLES, Tokens, hash_password, verify_password
 from .config import Settings
@@ -41,6 +42,7 @@ from . import op_alerts_service as OPS
 from .operations_api import build_operations_router
 from .ops_cache import OperationCache
 from .registry_api import build_router, labels_for_machine, upsert_machine, upsert_operation, upsert_property
+from .weather_api import build_weather_router
 
 
 def clean(o):
@@ -138,6 +140,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if st.cors_origins:
         app.add_middleware(CORSMiddleware, allow_origins=st.cors_origins, allow_methods=["*"], allow_headers=["*"])
     app.state.settings, app.state.SF, app.state.live, app.state.engine, app.state.tokens = st, SF, live, engine, tokens
+    app.state.weather = WeatherService.from_settings(st)   # Etapa 7: nada é buscado aqui, só quando o clima é pedido
 
     # ---------- dependências ----------
     def session():
@@ -163,6 +166,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     viewer, analyst, admin = need("viewer"), need("analyst"), need("admin")
     app.include_router(build_router(session, viewer, analyst, admin))
     app.include_router(build_operations_router(session, viewer, live, st, clean))
+    app.include_router(build_weather_router(session, viewer))
 
     # ---------- público ----------
     @app.get("/health", tags=["meta"])
@@ -170,7 +174,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "ok", "schema_version": SCHEMA_VERSION, "db": engine.dialect.name, "postgis": engine.dialect.name == "postgresql",
                 "mqtt": {"enabled": bool(st.mqtt_host), "connected": bool(mqtt_ref.get("src") and mqtt_ref["src"].connected.is_set()),
                          **(mqtt_ref["src"].stats if mqtt_ref.get("src") else {})},
-                "ingest": live.stats, "ops_cache": live.ops_cache.stats, "auth_secret_generated": tokens.generated}
+                "ingest": live.stats, "ops_cache": live.ops_cache.stats, "auth_secret_generated": tokens.generated,
+                "weather": app.state.weather.summary()}
 
     @app.get("/limits", tags=["meta"])
     def limits():

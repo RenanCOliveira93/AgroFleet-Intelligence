@@ -3,6 +3,7 @@
 O cache nunca pode servir resultado diferente do cálculo sem cache: cada teste compara com ``operation_state`` sem
 ``ops_cache`` sobre o mesmo banco.
 """
+import re
 from datetime import timedelta
 
 import pytest
@@ -15,6 +16,16 @@ USERS = {"admin": ("adm", "adm-pass"), "viewer": ("vie", "vie-pass")}
 # dependem do relógio de parede, não do dado; "alerts" vem do banco (não do cache) e o vigia em segundo plano do app
 # pode abrir "perda de conexão" entre duas leituras
 VOLATILE = {"evaluated_at", "connection", "alerts"}
+_AGE = re.compile(r"há \d+(?:[.,]\d+)? (min|h|s)\b")
+
+
+def _no_age(x):
+    """Textos com a idade do dado ("Último dado há 367327 min") viram o minuto entre duas chamadas: normaliza."""
+    if isinstance(x, dict):
+        return {k: _no_age(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_no_age(v) for v in x]
+    return _AGE.sub(r"há N \1", x) if isinstance(x, str) else x
 
 
 class FakeWS:
@@ -59,7 +70,7 @@ def _status(app, as_of=None, cached=True):
     live = app.state.live if cached else NoCache(app.state.live)
     with app.state.SF() as s:
         st = operation_state(s, "OP-SIM-A", as_of, live, app.state.settings)
-        return clean({k: v for k, v in status_payload(s, st, app.state.settings).items() if k not in VOLATILE})
+        return _no_age(clean({k: v for k, v in status_payload(s, st, app.state.settings).items() if k not in VOLATILE}))
 
 
 def _feed(app, sim, t0_min, t1_min, batch=60):
@@ -125,7 +136,7 @@ def test_mensagem_operation_status_com_cliente_conectado(api):
     assert st and {"telemetry"} <= {m["type"] for m in msgs}                                # mensagens antigas inalteradas
     m = st[-1]
     assert (m["operation_id"], m["machine_id"], m["origin"]) == ("OP-SIM-A", "SIM-TR-320", "simulated")
-    body = {k: v for k, v in m["status"].items() if k not in VOLATILE}
+    body = _no_age({k: v for k, v in m["status"].items() if k not in VOLATILE})
     assert not same(body, _status(app, cached=False))
     assert m["status"]["mode_label"] == "MODO SIMULAÇÃO"
 

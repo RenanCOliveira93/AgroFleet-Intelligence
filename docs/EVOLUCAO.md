@@ -263,3 +263,46 @@ Executadas juntas, a pedido. A interface recebeu apenas uma adição mínima (no
 - **Tamanho da mensagem:** `operation_status` tem cerca de 11 KB com 5 h; com muitas operações e clientes, vale filtrar por operação (Etapa 8, quando a tela consumir).
 - **Operação com lacuna de meses:** uma operação deixada "ativa" no cadastro por meses (achado ao recarregar a demo sobre dados de outro dia) gera um intervalo de 10 min para cada trecho do período: 36 mil intervalos em 8 meses. A soma acumulada era quadrática e cada intervalo filtrava o quadro inteiro, e a carga levou 386 s. Corrigido com soma corrente e busca binária, sem mudar o resultado, e testado. O status desse caso fica em 7,7 s frio e 1,3 s quente, e o restante é o tamanho da resposta. Resumir a série na tela (Etapa 8) e encerrar operações no cadastro resolvem.
 - **Alertas previstos e não implementados:** "consumo anormal" e "saída da área planejada", previstos no plano da Etapa 5, não foram implementados, e isso não foi registrado na Etapa 5.
+
+## Etapa 7 — Clima ✅
+
+**Objetivo.** Trazer o clima do ponto da operação para o backend, conforme a decisão B: INMET prioritário, Open-Meteo só em desenvolvimento não comercial, nenhuma API paga e "Sem dados meteorológicos" quando não houver dado. A tela consome isso na Etapa 8; esta etapa entrega só a API.
+
+**Alterações**
+
+| Arquivo | Mudança |
+|---|---|
+| `agrofleet/weather/` (novo: `base.py`, `inmet.py`, `metno.py`, `open_meteo.py`, `service.py`) | Interface `Provider` e três provedores. `WeatherService` escolhe pela ordem de `AGROFLEET_WEATHER_PROVIDERS`, guarda em cache com TTL e busca única por chave, e monta a resposta do contrato A. HTTP só com `urllib`, com função de busca injetável. |
+| `backend/app/weather_api.py` (novo) | `GET /operations/{id}/weather` (centroide do talhão, senão última posição; município da propriedade, senão `AGROFLEET_WEATHER_IBGE`) e `GET /weather?lat=&lon=&ibge=&tz=`. Papel viewer; falha do provedor nunca vira 5xx. |
+| `backend/app/config.py`, `main.py` | Variáveis `AGROFLEET_WEATHER_*`, `AGROFLEET_INMET_*` e `OPENMETEO_*`; serviço criado sem nenhuma busca; resumo `weather` em `/health`. |
+| `agrofleet/registry.py` | `PropertyInfo.ibge_municipality` opcional (7 dígitos, prefixo de UF válido). Cadastros antigos continuam válidos. |
+| `agrofleet/simulator/operations.py` | `PROP-SIM-SC` com `ibge_municipality="5206206"` (Cristalina-GO): a origem fictícia (-16,70; -47,60) cai nesse município pela malha do IBGE. |
+| `tests/test_weather.py` (novo, 30) | Leitura de respostas no formato real, sentinelas, UTC e `stale`, unidades, `CHAVE INVÁLIDA!`, HTTP e tempo esgotado, ordem e fallback, bloqueio do Open-Meteo, Expires do MET Norway, cache e falha em cache, período pela hora local, endpoints e nota de local simulado. Tudo offline. |
+| `docs/GUIA_TECNICO.md`, `README.md` | 3.2.1, 4.3, 5.4, 7.12 (novo), 10, 12 e 13; funcionalidades e licenças no README. |
+
+**Verificação ao vivo** (uma vez, duas requisições ao INMET para 5206206, em 2026-11-20 14:10 UTC, User-Agent genérico): estação A036 CRISTALINA-GO a 9,6 km do ponto (o INMET informa 14 km a partir do município), leitura de 13:00 UTC com 25,9 °C, 61 % de umidade, vento de 6,1 km/h de 182° com rajada de 19,1 km/h, 0,2 mm de chuva e 748 W/m² de radiação média; idade de 70 min, não `stale`. Previsão de Cristalina-GO para a manhã: "Muitas nuvens com pancadas de chuva isoladas", 20 a 28 °C, umidade de 70 a 100 %, vento N-NW fraco. `status: "ok"`.
+
+**Testes**
+
+| Suíte | Resultado |
+|---|---|
+| `pytest` (unitários + API) | **269/269** no fim da etapa: os 232 anteriores sem alteração de asserções, 30 novos de clima e 7 de outra frente em andamento |
+| `tests/test_weather.py` | 30/30, sem rede (busca falsa injetada; um teste confirma que a subida da API não acessa a rede) |
+
+**Decisões técnicas**
+- **INMET primeiro, com o que existe sem token.** A rota pública `estacao/proxima/{ibge}` entrega uma leitura REAL de estação. A rota com token só existe para quem tem Acordo de Cooperação Técnica, por isso é opcional; quando configurada, tem prioridade, porque escolhe a estação mais próxima do PONTO e não do município. Se falhar, cai na rota pública e o motivo fica em `reasons`.
+- **Observação, modelo e previsão separados.** `kind` diz o que é cada valor. Open-Meteo entra no bloco `observation` como `model`, nunca como leitura de sensor. Nebulosidade só vem do texto da previsão; nada é derivado.
+- **Distância e idade calculadas por nós.** Distância por haversine do ponto à estação. Idade pelo horário da medição (UTC) contra o nosso relógio, nunca pelo `Date` do provedor, que no INMET já foi visto atrasado. A idade é recalculada a cada resposta, mesmo com cache.
+- **Estação longe não vale.** Estação a mais de `AGROFLEET_INMET_MAX_STATION_KM` (60 km) do ponto não é usada, também na rota pública: uma leitura a 150 km não representa o talhão.
+- **Baixa frequência de propósito.** Cache de 30 min para a observação e 3 h para a previsão, falhas em cache por 120 s e nenhuma busca na subida. O INMET se opõe à cópia automatizada em massa (2026); o cliente faz no máximo uma busca por município ou estação a cada TTL.
+- **Open-Meteo bloqueado fora de desenvolvimento.** O plano gratuito é não comercial. Só roda com `AGROFLEET_ENV=dev` e a flag explícita, e a resposta sai com `non_commercial: true`. Exceção: com `OPENMETEO_API_KEY` de plano pago (licença comercial), vale em qualquer ambiente.
+- **MET Norway como alternativa comercial gratuita.** Os dados são CC BY 4.0 / NLOD, que permitem uso comercial. Fica desligado por padrão e é ligado só pela lista de provedores; respeita `Expires` e `If-Modified-Since`.
+- **Município pelo cadastro, não por geocodificação.** O código IBGE vem da propriedade (ou de `AGROFLEET_WEATHER_IBGE`). Geocodificação reversa (Nominatim) tem limites de uso e a malha do IBGE exigiria embutir ~0,7 MB por UF; ficou fora desta etapa.
+
+**Riscos e pendências**
+- **Rotas do INMET sem documentação oficial.** São o backend do próprio portal e podem mudar ou ser bloqueadas sem aviso. Cada provedor pode ser trocado por variável de ambiente (`metno`, ou `none`).
+- **Situação legal do INMET.** Os dados são públicos (Decreto 8.777/2016), mas não há licença explícita. Em 2026 o INMET cancelou tokens de empresas privadas e não descartou cobrança. Antes de uso comercial, pedir confirmação por escrito ao INMET (`cadastro.act@inmet.gov.br`).
+- **Rota com token não conferida com token válido.** Catálogo `/estacoes/T` e rota com token foram implementados pelos nomes de campo já vistos; só o comportamento `CHAVE INVÁLIDA!` foi observado ao vivo.
+- **Cadastros já gravados.** A propriedade `PROP-SIM-SC` gravada antes desta etapa não tem o código IBGE até a demonstração ser recarregada (`POST /demo/operations/load`) ou até definir `AGROFLEET_WEATHER_IBGE`.
+- **Cache por processo.** Reiniciar a API esvazia o cache; várias réplicas buscam de forma independente.
+- **Tela.** Nada é exibido ainda: o painel da operação consome `GET /operations/{id}/weather` na Etapa 8, com crédito da fonte junto do dado.

@@ -20,6 +20,7 @@ Plataforma de telemetria, monitoramento e auditoria de máquinas agrícolas, com
 - Ingestão MQTT com schema versionado (`agrofleet/v1`), autenticação e ACL.
 - Simulador reprodutível de 4 pulverizadores (operação normal, parada, perda de GNSS, vazão anormal, dados faltantes).
 - ROI com premissas configuráveis, tornado, ponto de equilíbrio e proveniência.
+- Clima do ponto da operação no backend: observação de estação do INMET (com distância e idade), previsão do período por município e provedores substituíveis por variável de ambiente; sem dado, "Sem dados meteorológicos".
 - API REST (OpenAPI), WebSocket e autenticação por papéis.
 
 ## Interface
@@ -73,7 +74,7 @@ Os testes de infraestrutura (`pytest -m infra`, PostGIS e Mosquitto reais) e E2E
 ## Estrutura do repositório
 
 ```
-agrofleet/          núcleo: schema, geo, quality, adapters/, analytics/, simulator/
+agrofleet/          núcleo: schema, geo, quality, adapters/, analytics/, simulator/, weather/ (clima)
 backend/app/        FastAPI, banco, autenticação, pipeline ao vivo
 frontend/           React + TypeScript + MapLibre GL JS
 simulator/          CLIs generate.py e publish.py
@@ -88,7 +89,7 @@ tests/              pytest (unitários, API, infra, E2E)
 
 ## Dados e licenças
 
-Todos os dados versionados (`sample_data/`, `payload_examples/`) são sintéticos ou fictícios; não há dados de terceiros. Dependências mantêm suas próprias licenças. Ver [seção 12 do guia técnico](docs/GUIA_TECNICO.md#12-licenças-e-atribuições).
+Todos os dados versionados (`sample_data/`, `payload_examples/`) são sintéticos ou fictícios; não há dados de terceiros. O clima é consultado em tempo de execução e exibido com a fonte ("Fonte: INMET"; Open-Meteo só em desenvolvimento não comercial). Dependências mantêm suas próprias licenças. Ver [seção 12 do guia técnico](docs/GUIA_TECNICO.md#12-licenças-e-atribuições).
 
 ## Documentação
 

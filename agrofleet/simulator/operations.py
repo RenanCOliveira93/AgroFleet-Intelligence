@@ -39,6 +39,7 @@ from .fleet import DEFAULT_START, ORIGIN_LAT, ORIGIN_LON
 
 PROPERTY_ID = "PROP-SIM-SC"
 PROPERTY_NAME = "Fazenda Santa Clara (simulada)"
+PROPERTY_IBGE = "5206206"     # Cristalina-GO, município que contém ORIGIN_LAT/ORIGIN_LON
 
 
 # ----------------------------------------------------------------------------------------------------------------
@@ -398,7 +399,9 @@ def simulate_operation(sc: Scenario, *, seed: int = 7, start: datetime = DEFAULT
         truth["energy"] = {"start_kwh": e.capacity_kwh * e.soc_start_pct / 100, "end_kwh": energy, "consumed_kwh": energy_used,
                            "returned_to_base": returned}
 
-    prop = PropertyInfo(property_id=PROPERTY_ID, name=PROPERTY_NAME, origin="simulated")
+    # a origem fictícia (-16,70; -47,60) cai em Cristalina-GO (malha municipal do IBGE): o clima consultado é o REAL
+    # desse ponto, não de um talhão real
+    prop = PropertyInfo(property_id=PROPERTY_ID, name=PROPERTY_NAME, origin="simulated", ibge_municipality=PROPERTY_IBGE)
     machine = MachineProfile(machine_id=sc.machine_id, name=sc.machine_name, kind=sc.kind,
                              energy_source="diesel" if d else "electric", autonomous=sc.autonomous,
                              property_id=PROPERTY_ID, origin="simulated", **sc.profile_limits)

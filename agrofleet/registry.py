@@ -31,6 +31,9 @@ OPERATION_LABEL = {"soil_preparation": "Preparo de solo", "planting": "Plantio",
                    "harvesting": "Colheita", "other": "Outra"}
 STATUS_LABEL = {"planned": "Planejada", "active": "Em andamento", "completed": "Concluída", "cancelled": "Cancelada"}
 
+# códigos IBGE das 27 UFs (os 2 primeiros dígitos do código de município)
+_UF_CODES = {"11", "12", "13", "14", "15", "16", "17", "21", "22", "23", "24", "25", "26", "27", "28", "29", "31", "32", "33", "35",
+             "41", "42", "43", "50", "51", "52", "53"}
 _ID = dict(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.\-]+$")
 
 
@@ -43,6 +46,18 @@ class PropertyInfo(_Base):
     name: str = Field(min_length=1, max_length=128)
     timezone: str = "America/Sao_Paulo"     # usado só para EXIBIR horários; o armazenamento é sempre UTC
     origin: Origin = "unknown"
+    # código IBGE do município (7 dígitos); usado pelo clima (Etapa 7: previsão e estação INMET por município)
+    ibge_municipality: str | None = None
+
+    @field_validator("ibge_municipality")
+    @classmethod
+    def _ibge(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        v = str(v).strip()
+        if not (len(v) == 7 and v.isdigit() and v[:2] in _UF_CODES):
+            raise ValueError(f"código IBGE de município inválido: {v!r} (7 dígitos, começando pelo código da UF, ex.: 5206206)")
+        return v
 
     @field_validator("timezone")
     @classmethod
