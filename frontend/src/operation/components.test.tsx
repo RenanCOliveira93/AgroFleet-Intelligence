@@ -70,7 +70,7 @@ describe("cartões com o corpo completo de /status", () => {
     expect(t).toContain("Último estado: Em operação · Sem conexão há 49 min");
     expect(t).toContain("03:00:00");
     expect(t).toContain("até o último dado");
-    expect(t).toContain("PE-07 · Pulverização");
+    expect(t).toContain("Pulverização");   // rótulo curto (nome da operação); máquina fica no title
   });
   it("KPIs da referência", () => {
     const t = text(<KpiRow status={fixture()} tz={TZ} />);

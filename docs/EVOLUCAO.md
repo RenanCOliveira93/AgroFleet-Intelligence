@@ -154,7 +154,7 @@ Executadas juntas, a pedido. A interface recebeu apenas uma adição mínima (no
 - O consumo e o ritmo futuros podem mudar com solo, relevo, carga e operador; a estimativa só extrapola a última hora. Nada foi validado com máquina real.
 - A ETA mira 100% da área planejada; quando a cabeceira não é trabalhada, a operação termina um pouco antes (A: 99,6%).
 - O status recalcula tudo a cada chamada (1,2 s em 3 h; 7,6 s em 12 h). O cache incremental é da Etapa 6.
-- As saídas gravadas no notebook 02 ainda mostram os números de cobertura anteriores; serão regeneradas na Etapa 9.
+- As saídas gravadas no notebook 02 mostravam os números de cobertura anteriores; foram regeneradas na Etapa 9.
 
 ## Etapa 5 — Alertas operacionais ✅
 
@@ -334,5 +334,36 @@ Executadas juntas, a pedido. A interface recebeu apenas uma adição mínima (no
 - A imagem de satélite gratuita com uso comercial tem 10 m de resolução: o talhão aparece, mas sem a nitidez da referência. Imagem melhor exige licença paga ou fonte própria.
 - Os provedores públicos de mapa (OpenFreeMap, EOX) não têm SLA, e o navegador do usuário envia IP e Referer a eles (nota de LGPD em `frontend/.env.example`).
 - O contador de alertas por propriedade depende do vínculo de operação ou máquina, porque `GET /alerts` não filtra por propriedade.
-- Ajustes visuais menores: o seletor de operação corta nomes longos e a condição do tempo é truncada em uma linha.
 - A validação geral e a regeneração das saídas do notebook 02 ficam para a Etapa 9.
+
+## Etapa 9 — Validação e documentação ✅
+
+**Objetivo.** Validar o conjunto das Etapas 1 a 8 nas camadas existentes, regenerar o que estava pendente e fechar a documentação.
+
+**Alterações**
+
+| Área | Mudança |
+|---|---|
+| Notebooks | Os três notebooks foram reconstruídos (`build_*.py`) e executados sem erro. As saídas do 02 coincidem com a tabela de cobertura de `GUIA_TECNICO.md` 8.2 (por exemplo, SIM-01: única −1,25 %, bruta −1,39 %; SIM-03: −14,98 % pela perda de GNSS). |
+| Capturas | `docs/img/ui_*.png` regeneradas pelo e2e na interface nova; capturas do painel Operação (escuro com satélite, claro com mapa, elétrico com autonomia insuficiente) feitas com a demo ao vivo via MQTT. |
+| Documentação | `GUIA_TECNICO.md` 6 reescrita: seções, painel Operação bloco a bloco com a origem de cada valor, mapa-base e variáveis `VITE_*`, demo ao vivo. README com as capturas novas. |
+| Interface | Seletor de operação com o nome completo (máquina no `title`); condição do tempo em até duas linhas. |
+
+**Testes**
+
+| Suíte | Resultado |
+|---|---|
+| `pytest` (unitários + API) | 269/269 |
+| `pytest -m infra` (PostGIS 16 + 3.4 e Mosquitto reais, contêineres descartáveis) | 6/6 |
+| `pytest -m e2e` (Chromium contra a pilha local: Vite + API + SQLite) | 5/5 |
+| `tsc --noEmit` / `vitest` / `vite build` | OK / 102/102 / OK |
+| Notebooks 01, 02 e 03 | executados sem erro |
+
+O e2e rodou contra o servidor de desenvolvimento (Vite com proxy para a API), não contra a imagem nginx do compose; o fluxo de telas e chamadas é o mesmo.
+
+**Pendências conhecidas (fora do plano de 9 etapas)**
+- Alertas "consumo anormal" e "saída da área planejada", previstos na Etapa 5, não foram implementados.
+- `GET /alerts` sem filtro por propriedade (o contador do cabeçalho depende do vínculo de operação ou máquina).
+- Token do INMET exige Acordo de Cooperação Técnica; sem ele, as rotas públicas não documentadas do portal são usadas com cache longo.
+- Satélite gratuito com uso comercial limitado a 10 m (EOX 2016).
+- `README.en.md` não acompanha as Etapas 7 a 9.

@@ -216,7 +216,7 @@ export function VehicleCard({ status, ops, selectedId, onSelect, tz, skewMs }: {
           <label className="opd-opsel">
             <span className="sr-only">Operação exibida</span>
             <select value={selectedId ?? ""} onChange={(e) => onSelect(e.target.value)} data-testid="op-select">
-              {ops.map((o) => <option key={o.operation_id} value={o.operation_id}>{o.machine_id} · {o.name || o.operation_label || o.operation_id}</option>)}
+              {ops.map((o) => <option key={o.operation_id} value={o.operation_id} title={`${o.machine_id} · ${o.name ?? ""}`}>{o.name || o.operation_label || o.operation_id}</option>)}
             </select>
           </label>)}
         <div className="opd-conn">

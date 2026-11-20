@@ -568,22 +568,63 @@ Para registrar uma manutenção feita, atualize `last_maintenance_engine_h` no c
 
 ## 6. Uso da interface
 
-Acesse `http://<servidor>:<HTTP_PORT>` (padrão 8080) com usuário e senha definidos no `.env` (não existe usuário padrão). A faixa no topo informa se os dados exibidos são simulados, reais ou desconhecidos; o seletor de origem filtra todas as abas e cada máquina tem selo de origem. `real` é declaração de quem enviou os dados.
+Acesse `http://<servidor>:<HTTP_PORT>` (padrão 8080) com usuário e senha definidos no `.env` (não existe usuário padrão).
 
-| Aba | Função |
+**Cabeçalho e barra de contexto.**
+- Cinco seções: Operação, Frota, Planejamento, Análises e Alertas. O sino mostra quantos alertas estão ativos.
+- À direita ficam o seletor de propriedade e o menu da conta, com Tema (claro, escuro ou automático, guardado no navegador), Sobre / limites e Sair.
+- A barra abaixo do cabeçalho mostra:
+  - a procedência dos dados, com a pílula "MODO SIMULAÇÃO" quando tudo é simulado;
+  - o filtro de origem, que vale para todas as seções;
+  - o estado da conexão ao vivo.
+- `real` é declaração de quem enviou os dados.
+
+| Seção | Subaba | Função |
+|---|---|---|
+| Operação | — | Painel da operação selecionada (a ativa mais recente da propriedade; troca pelo seletor no card da máquina). Detalhes abaixo. |
+| Frota | — | Cartões por máquina (estado, velocidade, GNSS, vazão, pressão, tanque, motor e energia quando reportados, "ao vivo"); mapa com posição atual e trilha. Campo ausente aparece como "—", nunca como 0 |
+| Planejamento | Operações | Cadastro (somente leitura) de operações, máquinas e talhões da propriedade; "Ver no painel" abre a operação |
+| Planejamento | Upload | Tipo, origem, fuso, unidades e `machine_id`; envio sem gravar mostra o relatório de qualidade; só então gravar. ISOXML retorna o motivo da recusa |
+| Análises | Reprodução | Controle deslizante sobre o histórico. Sem extrapolação: antes do primeiro ponto, depois do último ou durante perda de GNSS a máquina não é desenhada |
+| Análises | Cobertura | Área bruta, única, excesso e região >= 2x; cobertura do talhão; motivos de exclusão |
+| Análises | Relatórios | Agrupamento por máquina, propriedade, talhão ou operador, com período; exportação CSV |
+| Análises | ROI | Premissas editáveis; custo/ha, benefício, payback, VPL, tornado, pontos de equilíbrio e grade. O exemplo é ilustrativo |
+| Alertas | — | Lista com tipo, severidade, intervalo, regra e evidências; filtro por máquina quando aberta a partir do painel; `analyst` pode recalcular |
+| Sobre / limites (menu da conta) | — | Escopo, limites e estado de cada adaptador; `admin` carrega ou apaga a demonstração simulada |
+
+**Painel Operação.** Todos os valores vêm da API; o frontend só formata.
+
+| Bloco | Origem do valor |
 |---|---|
-| Frota | cartões por máquina (estado, velocidade, GNSS, vazão, pressão, tanque, "ao vivo"); mapa com posição atual e trilha. Campo ausente aparece como "—", nunca como 0; "(sem posição)" quando falta posição |
-| Reprodução | controle deslizante sobre o histórico. A posição vem da última amostra até o instante escolhido, sem extrapolação: antes do primeiro ponto, depois do último ou durante perda de GNSS a máquina não é desenhada; a trilha é quebrada onde falta posição |
-| Cobertura | seleção de máquinas e talhão; área bruta, única, excesso e região >= 2x; cobertura do talhão (coberta, não coberta, fora do limite); motivos de exclusão (sem posição, fora de trabalho, lacuna, precisão baixa) |
-| Alertas | lista com tipo, severidade (`info`/`warning`), intervalo, regra e evidências; atualização ao vivo; `analyst` pode recalcular (opcionalmente incluindo ML) |
-| Relatórios | agrupamento por máquina, propriedade, talhão ou operador, com período; exportação CSV. Custo/ha não aparece aqui: é calculado por `GET /metrics/{machine_id}?hourly_cost=...&product_cost_per_l=...`. Amostras sem a chave do grupo aparecem em "sem valor" |
-| Upload | tipo, origem, fuso, unidades e `machine_id`; envio sem gravar mostra o relatório de qualidade; só então gravar. ISOXML retorna o motivo da recusa |
-| ROI | premissas editáveis; custo/ha, benefício anual, payback, VPL, tornado (+-20%), pontos de equilíbrio e grade. O cenário de exemplo é ilustrativo. O botão de telemetria substitui duas premissas por valores da frota e mostra a origem |
-| Sobre / limites | escopo, limites e estado de cada adaptador; `admin` carrega ou apaga a demonstração simulada |
+| Mapa | `GET /operations/{id}/geometry`: talhão, área trabalhada, pendente, fora do talhão, trajetória e última posição com rumo |
+| Barra do talhão | Nome, área e progresso (`/status`); clima de `GET /operations/{id}/weather` (7.12). Sem dado: "Sem dados meteorológicos" |
+| Máquina | Nome do cadastro, operação, estado e conexão. O tempo de operação só conta com a conexão ativa; sem conexão, mostra o tempo até o último dado |
+| KPIs | Velocidade, rotação, carga do motor e combustível (% e litros pela capacidade cadastrada); em máquina elétrica, bateria (% e kWh). Sensor ausente: "—" e "não reportado" |
+| Missão e previsão | `mission`: área trabalhada / planejada, progresso, ETA no fuso da propriedade com faixa; sem ritmo confiável, "Indeterminada" e o motivo |
+| Autonomia | `autonomy`: autonomia estimada, tempo restante e o bloco de status (suficiente, apertada, insuficiente, indeterminado). Em vermelho aparece a nota de severidade crítica |
+| Consumo e produtividade | `consumption.avg` (L/h ou kW, média ponderada pelo tempo observado) e `mission.rate_ha_h`, com as últimas séries de 10 min |
+| Alertas | Alertas ativos da operação, críticos primeiro; cada linha abre a seção Alertas filtrada pela máquina |
 
-**Demonstração rápida (admin):** aba *Sobre / limites*, *Carregar demonstração SIMULADA*; explore Frota, Reprodução (SIM-03 perde GNSS), Cobertura, Alertas e ROI; encerre com *Apagar dados simulados*. Alternativamente, rode o perfil `sim` para dados ao vivo.
+Atualização: `/status` a cada 15 s e a mensagem WebSocket `operation_status`; geometria quando chega dado novo (no máximo a cada 20 s); clima a cada 10 min.
 
-O mapa de fundo é em branco por padrão (sem serviço externo); opcionalmente, defina `VITE_BASEMAP_TILES` na construção do frontend.
+**Mapa-base (decisão A).**
+- O alternador Mapa | Satélite usa provedores definidos por variável de ambiente na construção do frontend (`frontend/.env.example`). Os padrões são gratuitos e permitem uso comercial:
+  - OpenFreeMap (mapa; estilo escuro no tema escuro);
+  - EOX Sentinel-2 cloudless 2016 (satélite, CC BY 4.0, 10 m de resolução).
+- Se o mapa-base falhar, o mapa mostra um fundo liso com o aviso "Mapa-base indisponível", e as camadas continuam.
+- Sobre talhões simulados aparece "Local fictício: o talhão simulado não corresponde à imagem de fundo".
+- O navegador do usuário contata os servidores de tiles (IP e Referer): informe isso no aviso de privacidade ou hospede os tiles.
+
+| Variável | Padrão | Uso |
+|---|---|---|
+| `VITE_MAP_STYLE_URL` / `VITE_MAP_STYLE_URL_DARK` | OpenFreeMap `liberty` / `dark` | estilo vetorial do "Mapa"; vazio desliga |
+| `VITE_SATELLITE_TILES`, `_ATTRIBUTION`, `_MAXZOOM`, `_TILESIZE`, `_LABEL` | EOX 2016 | camada "Satélite" (XYZ); vazio desliga |
+| `VITE_BASEMAP_DEFAULT` | `map` | `map`, `satellite` ou `none` |
+| `VITE_BASEMAP_TILES` / `VITE_BASEMAP_ATTRIBUTION` | — | legado: raster como "Mapa" quando `VITE_MAP_STYLE_URL` não está definido |
+
+**Demonstração rápida (admin).**
+- **Dados gravados:** no painel Operação vazio (ou em *Sobre / limites*), carregue a demonstração SIMULADA. Explore Operação, Frota, Análises e Alertas, e encerre com *Apagar dados simulados*.
+- **Ao vivo:** registre as operações com `POST /demo/operations/load?scenarios=A,B,C&with_telemetry=false&start=<início>` e rode `simulator/publish.py --scenario A,B,C --start <início>`. Com um início no passado, o histórico até agora é publicado de imediato e o resto segue o relógio, então a operação aparece em andamento e conectada.
 
 ---
 
@@ -921,7 +962,7 @@ Todos os números abaixo vêm de saídas de notebooks, testes ou de `experiments
 
 Caso mínimo (2 passadas, 495 m, barra 24 m, espaçamento 22 m): esperado bruta 23 760 m², sobreposição 990 m², única 22 770 m²; obtido 23 760 / 980 / 22 780.
 
-Frota simulada, medida com `coverage()` sobre `simulate()` depois da faixa por trecho contínuo (Etapa 4). As saídas gravadas no notebook 02 ainda são anteriores à correção e serão regeneradas na Etapa 9:
+Frota simulada, medida com `coverage()` sobre `simulate()` depois da faixa por trecho contínuo (Etapa 4). As saídas do notebook 02 foram regeneradas na Etapa 9 e coincidem com esta tabela:
 
 | Máquina | Bruta est. (ha) | Bruta real | Única est. | Única real | Sobrep. est. | Sobrep. real | Erro bruta | Erro única |
 |---|---|---|---|---|---|---|---|---|
