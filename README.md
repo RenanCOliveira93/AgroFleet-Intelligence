@@ -25,6 +25,12 @@ Plataforma de telemetria, monitoramento e auditoria de máquinas agrícolas, com
 
 ## Interface
 
+![Operação, tema escuro, satélite](docs/img/ui_operacao_escuro_satelite.png)
+
+| Operação (tema claro) | Pulverizador elétrico com autonomia insuficiente |
+|---|---|
+| ![operação claro](docs/img/ui_operacao_claro_mapa.png) | ![elétrico crítico](docs/img/ui_operacao_eletrico_critico.png) |
+
 | Frota | Reprodução sem GNSS | Cobertura |
 |---|---|---|
 | ![frota](docs/img/ui_frota.png) | ![reprodução](docs/img/ui_reproducao_sem_gnss.png) | ![cobertura](docs/img/ui_cobertura.png) |
@@ -33,7 +39,7 @@ Plataforma de telemetria, monitoramento e auditoria de máquinas agrícolas, com
 |---|---|---|
 | ![alertas](docs/img/ui_alertas.png) | ![relatórios](docs/img/ui_relatorios.png) | ![roi](docs/img/ui_roi.png) |
 
-As capturas exibem dados simulados.
+As capturas exibem dados simulados. Mapa: OpenFreeMap e EOX Sentinel-2 cloudless 2016 (CC BY 4.0). Clima: INMET.
 
 ## Arquitetura
 
