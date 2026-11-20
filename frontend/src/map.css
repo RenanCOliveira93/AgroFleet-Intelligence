@@ -1,0 +1,82 @@
+/* Mapa (MapView). Escopo .agf-map para não colidir com os estilos globais de botão de styles.css. */
+.agf-map { position:relative; width:100%; min-height:200px; isolation:isolate; --map-ui:rgba(10,20,18,.86); --map-ui-hover:#17312A; --map-ui-line:rgba(255,255,255,.10); --map-ui-fg:#FFFFFF; --map-ui-muted:#C9D7D1; --map-neon:#4ADE3B; }
+.agf-map--light.agf-map--default { --map-ui:rgba(29,52,36,.88); --map-ui-hover:#28503A; }
+.agf-map > .map { width:100%; height:100%; }
+.agf-map--operation { border-radius:var(--radius, 14px); overflow:hidden; border:1px solid var(--line, #1E2F2B); background:#0E1A17; }
+.agf-map--operation > .map { border:0; border-radius:0; }
+.agf-map:fullscreen { width:100vw; height:100vh !important; border-radius:0; background:#0E1A17; }
+.agf-map:fullscreen > .map { border-radius:0; }
+.agf-map--fs-fallback { position:fixed !important; inset:0; z-index:1000; height:100% !important; border-radius:0 !important; }
+
+/* Mapa | Satélite */
+.agf-map .agf-seg { position:absolute; top:12px; left:12px; z-index:3; display:flex; gap:2px; padding:4px; border-radius:10px; background:var(--map-ui); border:1px solid var(--map-ui-line); box-shadow:0 2px 8px rgba(0,0,0,.25); }
+.agf-map .agf-seg button { margin:0; padding:6px 16px; border:0; border-radius:7px; background:transparent; color:var(--map-ui-muted); font:600 14px/1.2 var(--font, inherit); cursor:pointer; }
+.agf-map .agf-seg button:hover:not(:disabled) { color:var(--map-ui-fg); background:var(--map-ui-hover); }
+.agf-map .agf-seg button[aria-pressed="true"] { background:#1F4A2C; color:#FFFFFF; box-shadow:inset 0 0 0 1px rgba(74,222,59,.35); }
+.agf-map .agf-seg button:disabled { opacity:.45; cursor:not-allowed; }
+
+/* Barra vertical de controles */
+.agf-map .agf-tools { position:absolute; top:64px; left:12px; z-index:3; display:flex; flex-direction:column; gap:8px; }
+.agf-map .agf-ctl { margin:0; width:40px; height:40px; padding:0; display:grid; place-items:center; border-radius:9px; border:1px solid var(--map-ui-line);
+  background:var(--map-ui); color:var(--map-ui-fg); cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,.25); }
+.agf-map .agf-ctl:hover { background:var(--map-ui-hover); }
+.agf-map .agf-ctl[aria-expanded="true"], .agf-map .agf-ctl[aria-pressed="true"] { background:#1F4A2C; }
+.agf-map button:focus-visible, .agf-map .agf-pop input:focus-visible { outline:2px solid var(--map-neon); outline-offset:2px; }
+.agf-map .agf-layers { position:relative; }
+.agf-map .agf-pop { position:absolute; left:48px; top:0; margin:0; min-width:190px; padding:8px 12px 10px; border-radius:10px; border:1px solid var(--map-ui-line);
+  background:rgba(10,20,18,.94); color:var(--map-ui-fg); font-size:13px; box-shadow:0 6px 20px rgba(0,0,0,.35); }
+.agf-map .agf-pop legend { float:left; width:100%; padding:0 0 6px; margin:0; font-weight:700; font-size:12px; letter-spacing:.02em; color:var(--map-ui-muted); text-transform:uppercase; }
+.agf-map .agf-pop label { clear:both; display:flex; align-items:center; gap:8px; padding:4px 0; cursor:pointer; color:var(--map-ui-fg); }
+.agf-map .agf-pop input { accent-color:var(--map-neon); width:16px; height:16px; margin:0; }
+
+/* Escala gráfica "0 — 250 — 500 m" */
+.agf-map .agf-scale { position:absolute; left:12px; bottom:12px; z-index:3; padding:6px 26px 8px 16px; border-radius:8px; background:rgba(10,20,18,.72); color:#fff; font:600 11px/1 var(--font, inherit); pointer-events:none; }
+.agf-map .agf-scale-labels { position:relative; height:13px; margin:0 0 3px; }
+.agf-map .agf-scale-labels span { position:absolute; top:0; white-space:nowrap; }
+.agf-map .agf-scale-labels span:nth-child(1) { left:0; transform:translateX(-50%); }
+.agf-map .agf-scale-labels span:nth-child(2) { left:50%; transform:translateX(-50%); }
+.agf-map .agf-scale-labels span:nth-child(3) { left:100%; transform:translateX(-50%); }
+.agf-map .agf-scale-bar { position:relative; height:5px; border:2px solid #fff; border-top:0; box-sizing:border-box; }
+.agf-map .agf-scale-bar::after { content:""; position:absolute; left:50%; bottom:0; width:2px; height:4px; background:#fff; transform:translateX(-50%); }
+
+/* Avisos sobre o mapa (data da imagem, local fictício, mapa-base indisponível) */
+.agf-map .agf-chips { position:absolute; top:12px; right:12px; z-index:3; display:flex; flex-direction:column; align-items:flex-end; gap:6px; max-width:min(72%, 480px); pointer-events:none; }
+.agf-map:not(.agf-map--controls) .agf-chips { right:auto; left:12px; align-items:flex-start; }
+.agf-map .agf-chip { pointer-events:auto; padding:4px 10px; border-radius:999px; background:rgba(10,20,18,.82); color:#fff; font:500 12px/1.35 var(--font, inherit); border:1px solid var(--map-ui-line); }
+.agf-map .agf-chip--warn { border-color:rgba(245,184,0,.7); color:#FFE08A; }
+.agf-map .agf-chip--notice { border-color:rgba(239,68,68,.6); color:#FFD1D1; }
+
+/* Atribuição sempre visível (o "i" recolhido é permitido, exceto com tiles do OSM) */
+.agf-map--operation .maplibregl-ctrl-attrib, .agf-map--controls .maplibregl-ctrl-attrib { background:rgba(10,20,18,.72); color:#D5E2DC; }
+.agf-map--operation .maplibregl-ctrl-attrib a, .agf-map--controls .maplibregl-ctrl-attrib a { color:#F0FFF0; }
+.agf-map--operation .maplibregl-ctrl-attrib.maplibregl-compact, .agf-map--controls .maplibregl-ctrl-attrib.maplibregl-compact { background:rgba(240,248,244,.92); color:#1d2a1f; }
+.agf-map--operation .maplibregl-ctrl-attrib.maplibregl-compact a, .agf-map--controls .maplibregl-ctrl-attrib.maplibregl-compact a { color:#1d2a1f; }
+.agf-map--dark.agf-map--default .maplibregl-ctrl-attrib:not(.maplibregl-compact) { background:rgba(10,20,18,.72); color:#D5E2DC; }
+.agf-map--dark.agf-map--default .maplibregl-ctrl-attrib:not(.maplibregl-compact) a { color:#F0FFF0; }
+
+/* Marcadores da frota (e2e conta .mk) */
+.maplibregl-marker.mk { width:26px; height:26px; border-radius:50%; border:3px solid #999; color:#fff; font:700 11px/1 var(--font, inherit); display:flex; align-items:center; justify-content:center;
+  text-shadow:0 0 2px #000; box-shadow:0 1px 4px rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.55); box-sizing:border-box; }
+
+/* Marcador da máquina na operação: pino com trator; o círculo vazado embaixo é a posição exata */
+.agf-pin { position:relative; width:56px; height:82px; pointer-events:auto; cursor:default; --pin-ring:var(--map-neon, #4ADE3B); }
+.agf-pin[data-state="idle"] { --pin-ring:#F5B800; }
+.agf-pin[data-state="refilling"] { --pin-ring:#3B9EFF; }
+.agf-pin[data-state="fault"] { --pin-ring:#EF4444; }
+.agf-pin[data-state="off"], .agf-pin[data-state="unknown"] { --pin-ring:#9BB0AA; }
+.agf-pin-head { position:absolute; left:2px; top:0; width:52px; height:52px; box-sizing:border-box; border-radius:50%; display:grid; place-items:center; z-index:2;
+  background:#0F2A1A; color:#fff; border:3px solid var(--pin-ring); box-shadow:0 3px 10px rgba(0,0,0,.55), 0 0 14px rgba(74,222,59,.35); }
+.agf-pin-head::after { content:""; position:absolute; inset:-3px; border-radius:50%; border:2px solid var(--pin-ring); opacity:0; animation:agf-pulse 2.4s ease-out infinite; pointer-events:none; }
+.agf-pin-tip { position:absolute; left:50%; top:47px; z-index:1; width:0; height:0; transform:translateX(-50%); border-left:10px solid transparent; border-right:10px solid transparent; border-top:17px solid var(--pin-ring); }
+.agf-pin-dot { position:absolute; left:50%; bottom:0; width:14px; height:14px; box-sizing:border-box; transform:translateX(-50%); border-radius:50%; border:3px solid #fff; background:transparent; box-shadow:0 0 0 1px rgba(0,0,0,.35), 0 0 6px rgba(0,0,0,.4); }
+.agf-pin-heading { position:absolute; left:28px; top:26px; width:0; height:0; z-index:3; transform-origin:0 0; }
+.agf-pin-heading i { position:absolute; left:-6px; top:-38px; width:0; height:0; border-left:6px solid transparent; border-right:6px solid transparent; border-bottom:9px solid var(--pin-ring); filter:drop-shadow(0 0 2px rgba(0,0,0,.6)); }
+@keyframes agf-pulse { 0% { transform:scale(1); opacity:.7; } 80% { transform:scale(1.55); opacity:0; } 100% { transform:scale(1.55); opacity:0; } }
+@media (prefers-reduced-motion: reduce) { .agf-pin-head::after { animation:none; } }
+
+@media (max-width: 640px) {
+  .agf-map .agf-seg button { padding:6px 12px; font-size:13px; }
+  .agf-map .agf-ctl { width:36px; height:36px; }
+  .agf-map .agf-tools { top:58px; }
+  .agf-map .agf-chips { max-width:60%; }
+}

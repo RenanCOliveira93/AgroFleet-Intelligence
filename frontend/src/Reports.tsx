@@ -23,10 +23,10 @@ export function ReportsTab({ ctx }: { ctx: Ctx }) {
         <button onClick={() => download("/reports", { group_by: by, origin: ctx.origin, format: "csv", ...(start ? { start: iso(start) } : {}), ...(end ? { end: iso(end) } : {}) }, `relatorio_${by}.csv`)}>Baixar CSV</button>
       </div>
       {err && <p className="err">{err}</p>}
-      {rep && (<table data-testid="report-table"><thead><tr><th>{by}</th><th>Origem</th><th>Em trabalho</th><th>Parada (ligada)</th><th>Distância</th><th>Volume</th><th>Área bruta</th><th>Área única</th><th>Sobreposição</th><th>ha/h (trabalho)</th></tr></thead>
+      {rep && (<div className="table-wrap"><table data-testid="report-table"><thead><tr><th>{by}</th><th>Origem</th><th>Em trabalho</th><th>Parada (ligada)</th><th>Distância</th><th>Volume</th><th>Área bruta</th><th>Área única</th><th>Sobreposição</th><th>ha/h (trabalho)</th></tr></thead>
         <tbody>{rep.rows.map((r: any, i: number) => (
           <tr key={i}><td>{label(r)}</td><td>{r.origins.join(", ")}</td><td>{hoursHM(r.time_h.working)}</td><td>{hoursHM(r.time_h.idle)}</td><td>{fmt(r.distance_km, 1, "km")}</td>
-            <td>{fmt(r.volume_l, 0, "L")}</td><td>{fmt(r.coverage.gross_ha, 2, "ha")}</td><td>{fmt(r.coverage.unique_ha, 2, "ha")}</td><td>{fmtPct(r.coverage.overlap_pct_of_gross)}</td><td>{fmt(r.unique_ha_per_working_h, 1)}</td></tr>))}</tbody></table>)}
+            <td>{fmt(r.volume_l, 0, "L")}</td><td>{fmt(r.coverage.gross_ha, 2, "ha")}</td><td>{fmt(r.coverage.unique_ha, 2, "ha")}</td><td>{fmtPct(r.coverage.overlap_pct_of_gross)}</td><td>{fmt(r.unique_ha_per_working_h, 1)}</td></tr>))}</tbody></table></div>)}
       <p className="muted">Em relatórios por talhão/propriedade/operador, a área única é a união entre as máquinas do grupo. Amostras sem a chave do grupo aparecem como "sem valor informado" (não são atribuídas a ninguém).</p>
     </section>
   );

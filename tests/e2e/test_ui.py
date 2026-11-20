@@ -48,8 +48,25 @@ def login(browser, user="admin"):
     return pg
 
 
+# Etapa 8: as abas antigas viraram seções do cabeçalho (navegação "Seções") e subabas (role=tab) dentro delas.
+SECTION_OF = {"Frota": "Frota", "Alertas": "Alertas", "Upload": "Planejamento", "Operações": "Planejamento",
+              "Reprodução": "Análises", "Cobertura": "Análises", "Relatórios": "Análises", "ROI": "Análises", "Operação": "Operação"}
+SUBTABS = {"Upload", "Operações", "Reprodução", "Cobertura", "Relatórios", "ROI"}
+
+
+def section(pg, label):
+    pg.get_by_role("navigation", name="Seções").get_by_role("button", name=label).click()
+
+
 def tab(pg, name):
-    pg.get_by_role("tab", name=name).click()
+    """Abre a tela pelo nome antigo da aba: seção do cabeçalho e, se houver, a subaba; "Sobre / limites" fica no menu da conta."""
+    if name == "Sobre / limites":
+        pg.get_by_role("button", name=re.compile("^Conta")).click()
+        pg.get_by_role("menuitem", name="Sobre / limites").click()
+        return
+    section(pg, SECTION_OF[name])
+    if name in SUBTABS:
+        pg.get_by_role("tab", name=name, exact=True).click()
 
 
 def test_login_invalido(browser):
@@ -145,7 +162,7 @@ def test_upload_validacao_e_commit(browser):
     pg.get_by_test_id("commit").click()
     expect(pg.get_by_test_id("quality")).to_contain_text("gravadas: 6")
     pg.screenshot(path=str(IMG / "ui_upload.png"), full_page=True)
-    pg.get_by_role("tab", name="Frota").click()
+    tab(pg, "Frota")
     expect(pg.get_by_test_id("provenance-banner")).to_contain_text("origens misturadas")
     expect(pg.get_by_test_id("origin-real")).to_have_count(1)
     # limpeza para não vazar para outros testes
@@ -160,3 +177,34 @@ def test_viewer_nao_tem_acoes_de_escrita(browser):
     expect(pg.get_by_text("Upload requer o papel analista ou admin.")).to_be_visible()
     tab(pg, "Sobre / limites")
     expect(pg.get_by_test_id("load-demo")).to_have_count(0)
+
+
+def test_shell_secoes_tema_e_badge(browser):
+    pg = login(browser)
+    nav = pg.get_by_role("navigation", name="Seções")
+    expect(nav.get_by_role("button", name="Operação")).to_have_attribute("aria-current", "page")   # seção padrão após o login
+    for label in ("Frota", "Planejamento", "Análises", "Alertas"):
+        section(pg, label)
+        expect(nav.get_by_role("button", name=label)).to_have_attribute("aria-current", "page")
+    section(pg, "Planejamento")
+    expect(pg.get_by_role("tab", name="Operações", exact=True)).to_have_attribute("aria-selected", "true")
+    # tema global persistido (decisão D)
+    pg.get_by_role("button", name=re.compile("^Conta")).click()
+    pg.get_by_role("menuitemradio", name="Claro").click()
+    assert pg.evaluate("document.documentElement.dataset.theme") == "light"
+    assert pg.evaluate("localStorage.getItem('agf-theme')") == "light"
+    pg.get_by_role("menuitemradio", name="Automático").click()
+    assert pg.evaluate("document.documentElement.dataset.theme") is None
+    pg.keyboard.press("Escape")
+    # badge de Alertas = alertas ativos (API) da origem atual, quando houver
+    h = {"Authorization": f"Bearer {api_token()}"}
+    n = len(requests.get(f"{URL}/api/alerts", params={"status": "active", "limit": 5000}, headers=h, timeout=30).json())
+    props = requests.get(f"{URL}/api/registry/properties", headers=h, timeout=30).json()
+    if len(props) == 1:          # propriedade única fica escolhida: o badge conta só os alertas ligados a ela (≤ total)
+        badge = pg.get_by_test_id("alerts-badge")
+        if badge.count():
+            assert int(badge.inner_text().rstrip("+")) <= max(n, 99)
+    elif n:
+        expect(pg.get_by_test_id("alerts-badge")).to_have_text(str(n) if n <= 99 else "99+", timeout=40000)
+    else:
+        expect(pg.get_by_test_id("alerts-badge")).to_have_count(0)

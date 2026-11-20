@@ -306,3 +306,33 @@ Executadas juntas, a pedido. A interface recebeu apenas uma adição mínima (no
 - **Cadastros já gravados.** A propriedade `PROP-SIM-SC` gravada antes desta etapa não tem o código IBGE até a demonstração ser recarregada (`POST /demo/operations/load`) ou até definir `AGROFLEET_WEATHER_IBGE`.
 - **Cache por processo.** Reiniciar a API esvazia o cache; várias réplicas buscam de forma independente.
 - **Tela.** Nada é exibido ainda: o painel da operação consome `GET /operations/{id}/weather` na Etapa 8, com crédito da fonte junto do dado.
+
+## Etapa 8 — Interface ✅
+
+**Objetivo.** Reorganizar a interface em torno do painel de referência ("AgroFleet Intelligence", tema escuro), com dados reais da API, sem números mockados e sem inventar leituras.
+
+**Alterações**
+
+| Área | Mudança |
+|---|---|
+| Estrutura (`App.tsx`, `styles.css`, `theme.ts`, `shell.ts`, `Planning.tsx`) | Cabeçalho de 78 px com logotipo, cinco seções (Operação, Frota, Planejamento, Análises, Alertas), contador de alertas ativos, seletor de propriedade e menu da conta. Barra de contexto com "MODO SIMULAÇÃO", procedência, filtro de origem e estado do WebSocket. As abas antigas viraram subabas com os mesmos nomes (Reprodução, Cobertura, Relatórios, ROI, Upload). Tema claro (terroso), escuro (referência) ou automático, persistido (decisão D). |
+| Painel Operação (`frontend/src/operation/`) | Mapa e barra do talhão com clima; card da máquina com tempo de operação (só conta com conexão ativa); KPIs de velocidade, rotação, carga e combustível ou bateria; missão, previsão de conclusão, autonomia, consumo e produtividade médios com séries; alertas ativos. Valor ausente aparece como "—" com motivo. Atualização por polling e pela mensagem WebSocket `operation_status`. |
+| Mapa (`MapView.tsx`, `mapConfig.ts`, `map.css`, `.env.example`) | Alternância Mapa/Satélite (decisão A) com provedores por variável de ambiente: OpenFreeMap (mapa, uso comercial permitido) e EOX Sentinel-2 cloudless 2016 (satélite, CC BY 4.0, 10 m). Esri ficou de fora (os termos exigem assinatura ArcGIS). Sem mapa-base disponível, fundo liso com aviso e as camadas continuam. Contorno neon do talhão, área trabalhada, trajetória, marcador com rumo, controles laterais, escala e aviso "Local fictício" para talhões simulados. Corrigido o enquadramento que não incluía o talhão inteiro. |
+| Backend (`analytics/mission.py`, `operations_api.py`) | Nova chave `consumption` no `/status` (e no `operation_status`): média de L/h ou kW ponderada pelo tempo observado dos intervalos de 10 min. Difere da média amostra a amostra em 7e-6 (A) e 1,7e-4 (B). `mission.py` passou a converter `ts` com `to_numpy(dtype="datetime64[ns]")`, que evita o aviso do pandas 3.1 tratado como erro pelo `pytest.ini`. |
+| Simulador (`simulator/publish.py`) | Com `--start` no passado, o atraso acumulado é publicado de imediato e o resto segue o relógio real: a demo ao vivo começa com a operação em andamento. |
+
+**Testes**
+
+| Suíte | Resultado |
+|---|---|
+| `pytest` (unitários + API) | 269/269 (232 anteriores + 30 de clima + 7 de consumo) |
+| `tsc --noEmit` / `vitest` | OK / 102/102 (12 anteriores + 90 novos: formatação, componentes, mapa, tema, estrutura) |
+| Visual (Playwright, 1672×941) | Sem rolagem nos temas escuro e claro e nos dois mapas-base; sem erro no console; demo ao vivo via MQTT |
+| `pytest -m e2e` | não executado (exige a pilha compose); o auxiliar `tab()` foi adaptado às seções |
+
+**Riscos e pendências**
+- A imagem de satélite gratuita com uso comercial tem 10 m de resolução: o talhão aparece, mas sem a nitidez da referência. Imagem melhor exige licença paga ou fonte própria.
+- Os provedores públicos de mapa (OpenFreeMap, EOX) não têm SLA, e o navegador do usuário envia IP e Referer a eles (nota de LGPD em `frontend/.env.example`).
+- O contador de alertas por propriedade depende do vínculo de operação ou máquina, porque `GET /alerts` não filtra por propriedade.
+- Ajustes visuais menores: o seletor de operação corta nomes longos e a condição do tempo é truncada em uma linha.
+- A validação geral e a regeneração das saídas do notebook 02 ficam para a Etapa 9.

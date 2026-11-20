@@ -5,7 +5,9 @@ import { Legend, MapView } from "./MapView";
 import { fmt, msToKmh, ORIGIN_COLOR, ORIGIN_LABEL, STATE_COLOR, STATE_LABEL } from "./lib";
 
 export function OriginBadge({ origin }: { origin: string }) {
-  return <span className="badge" style={{ borderColor: ORIGIN_COLOR[origin], color: ORIGIN_COLOR[origin] }} data-testid={`origin-${origin}`}>{ORIGIN_LABEL[origin] ?? origin}</span>;
+  // cor por tema via CSS (.badge.origin-*); ORIGIN_COLOR fica como reserva para origens fora do padrão
+  const known = origin in ORIGIN_LABEL;
+  return <span className={`badge origin-${origin}`} style={known ? undefined : { color: ORIGIN_COLOR[origin] }} data-testid={`origin-${origin}`}>{ORIGIN_LABEL[origin] ?? origin}</span>;
 }
 
 export function FleetTab({ ctx }: { ctx: Ctx }) {

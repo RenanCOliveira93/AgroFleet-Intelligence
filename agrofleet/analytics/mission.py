@@ -114,6 +114,12 @@ class _BucketCtx:
     gts: np.ndarray | None = None       # g["ts"] em datetime64 (ordenado): fatia por busca binária
 
 
+def _ts64(g: pd.DataFrame) -> np.ndarray:
+    """``g["ts"]`` como datetime64 em UTC sem fuso (o que ``Series.values`` devolvia; ``.values`` em coluna com fuso
+    está obsoleto no pandas 3.1 e vira erro com ``-W error::DeprecationWarning``)."""
+    return g["ts"].to_numpy(dtype="datetime64[ns]")
+
+
 def bucket_entry(c: _BucketCtx, i: int, cum, prev_ha: float):
     """Intervalo ``i`` da série. ``cum`` = união (∩ talhão) dos intervalos anteriores; ``prev_ha`` = soma das áreas
     novas anteriores. Retorna (entrada ou None, novo ``cum``). Usado pelo cálculo completo e pelo incremental."""
@@ -142,7 +148,7 @@ def bucket_entry(c: _BucketCtx, i: int, cum, prev_ha: float):
     nodata = float(dt[~valid & (dt > 0)].sum()) + (max(min(c.first_off, b) - a, 0.0) if i == 0 else 0.0)
     wk = float(dt[valid & (st == "working")].sum())
     t0, t1 = c.t_start + pd.Timedelta(seconds=a), c.t_start + pd.Timedelta(seconds=b)
-    gts = c.gts if c.gts is not None else c.g["ts"].values
+    gts = c.gts if c.gts is not None else _ts64(c.g)
     gb = c.g.iloc[int(np.searchsorted(gts, t0.to_datetime64(), "left")):int(np.searchsorted(gts, t1.to_datetime64(), "left"))]
     fuel, _ = time_weighted_mean(gb, "fuel_rate_lph", "q_fuel_rate", c.max_gap_s)
     power, _ = time_weighted_mean(gb, "battery_power_kw", "q_battery", c.max_gap_s)
@@ -228,7 +234,7 @@ def mission(df: pd.DataFrame, op: OperationPlan, field_lonlat: dict | None = Non
     span = (last - t_start).total_seconds()
     ctx = _BucketCtx(B=B, span=span, nb=max(int(np.ceil(span / B)), 1), seg=seg, seg_t=seg.t0 - t_start.timestamp(),
                      fld=fld, tsec=tsec, dt=dt, valid=valid, states=states, g=g, t_start=t_start, first_off=first_off,
-                     max_gap_s=cfg.coverage.max_gap_s, gts=g["ts"].values)
+                     max_gap_s=cfg.coverage.max_gap_s, gts=_ts64(g))
     if cache is not None:
         res.series, cum = cache.series_prefix(ctx, bucket_entry)      # intervalos congelados (idênticos ao cálculo completo)
     else:
@@ -293,3 +299,49 @@ def mission(df: pd.DataFrame, op: OperationPlan, field_lonlat: dict | None = Non
         res.remaining_h_range = [opt, pes]
         res.eta_range = [at(opt), at(pes) if pes is not None else None]
     return res
+
+
+# ---- consumo médio da operação (Etapa 8) -----------------------------------------------------------------------
+CONSUMPTION_SOURCES = {"diesel": ("fuel_rate_lph", "L/h"), "electric": ("battery_power_kw", "kW")}
+_UNIT = dict(CONSUMPTION_SOURCES.values())
+
+
+def operation_consumption(series: list[dict], energy_source: str | None, bucket_min: float = 10.0) -> dict:
+    """Consumo médio da operação a partir da série da missão (``MissionResult.series``). Cálculo puro.
+
+    média = Σ (taxa do intervalo × ``observed_h``) / Σ ``observed_h``, só nos intervalos com taxa reportada e tempo
+    observado > 0. Intervalo sem taxa ou só com lacuna fica fora (nada é preenchido). ``observed_h`` = soma dos pesos.
+    Fonte: diesel → ``fuel_rate_lph`` (L/h); elétrico → ``battery_power_kw`` (kW, potência líquida: recarga e
+    regeneração entram como negativas, como reportadas). Fonte não cadastrada (não há híbrido no cadastro): usa a taxa
+    que a série reporta; se as duas aparecem, a de maior tempo observado.
+
+    Diferença para a média amostra a amostra da operação inteira: a taxa de cada intervalo já é média ponderada pelo
+    tempo das suas leituras válidas, mas o peso aqui é o tempo observado do intervalo inteiro. Se o sensor de taxa
+    falha em parte de um intervalo, o trecho sem leitura é representado pela média do resto do intervalo; com leitura
+    contínua, as duas médias coincidem a menos da amostra de fronteira de cada intervalo (~1 s em 10 min).
+    """
+    def acc(col):
+        w = [(s[col], s["observed_h"]) for s in series if s.get(col) is not None and (s.get("observed_h") or 0) > 0]
+        return w, sum(h for _, h in w)
+
+    if energy_source in CONSUMPTION_SOURCES:
+        col = CONSUMPTION_SOURCES[energy_source][0]
+        used, obs = acc(col)
+    else:
+        cands = [(c, *acc(c)) for c, _ in CONSUMPTION_SOURCES.values()]
+        col, used, obs = max(cands, key=lambda x: x[2])
+        if obs <= 0:
+            col = None
+    basis = (f"Média da operação, ponderada pelo tempo observado nos intervalos de {bucket_min:.0f} min com taxa "
+             "reportada.")
+    if col == "battery_power_kw":
+        basis += " Potência líquida: recarga e regeneração reduzem a média."
+    if col is not None and energy_source not in CONSUMPTION_SOURCES:
+        basis += " Fonte de energia não cadastrada: usada a taxa que a máquina reporta."
+    out = {"source": col, "unit": _UNIT.get(col), "avg": None, "observed_h": float(obs), "intervals": len(used),
+           "basis": basis, "reason": None}
+    if obs <= 0:
+        out["reason"] = ("Máquina não reporta consumo." if series else "Sem telemetria no período da operação.")
+        return out
+    out["avg"] = float(sum(v * h for v, h in used) / obs)
+    return out

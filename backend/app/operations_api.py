@@ -24,7 +24,7 @@ from sqlalchemy import func, select
 
 from agrofleet import registry as RG
 from agrofleet.analytics.autonomy import autonomy
-from agrofleet.analytics.mission import mission
+from agrofleet.analytics.mission import MissionConfig, mission, operation_consumption
 from agrofleet.geo import ha, transform_geom
 from agrofleet.schema import ENGINE_ENERGY_FIELDS
 
@@ -174,6 +174,8 @@ def status_payload(s, st: OpState, settings) -> dict:
         "autonomy": a.to_dict() if a else None,
         "autonomy_unavailable": None if a else "Máquina sem cadastro da mesma origem: autonomia não calculada.",
         "series": series,
+        # mesma série do cálculo (completo ou incremental): com cache, o consumo é idêntico ao do cálculo completo
+        "consumption": operation_consumption(series, prof.energy_source if prof else None, MissionConfig().bucket_min),
         "n_samples": int(len(df)),
         "alerts": _active_alerts(s, op, df),
     }

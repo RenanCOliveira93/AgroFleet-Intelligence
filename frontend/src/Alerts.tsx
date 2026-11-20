@@ -11,14 +11,15 @@ const LABEL: Record<string, string> = { flow_deviation: "Desvio de vazão", pres
   energy_level: "Nível de energia", autonomy_risk: "Risco de não conclusão", maintenance_due: "Manutenção preventiva", connection_lost: "Perda de conexão" };
 const SEV: Record<string, string> = { critical: "Crítico", warning: "Aviso", info: "Informativo" };
 
-export function AlertsTab({ ctx }: { ctx: Ctx }) {
+export function AlertsTab({ ctx, params = {}, onClearParams }: { ctx: Ctx; params?: Record<string, string>; onClearParams?: () => void }) {
   const [rows, setRows] = useState<any[]>([]);
   const [ev, setEv] = useState<any>(null);
   const [msg, setMsg] = useState("");
   const [ml, setMl] = useState(false);
   const [type, setType] = useState("");
-  const load = () => api("/alerts", { params: { origin: ctx.origin, type, sort: "priority" } }).then(setRows);
-  useEffect(() => { load(); }, [ctx.origin, type]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const machineId = params.machine_id, operationId = params.operation_id;   // vindos de ctx.goto("alerts", …, params)
+  const load = () => api("/alerts", { params: { origin: ctx.origin, type, sort: "priority", machine_id: machineId, operation_id: operationId } }).then(setRows);
+  useEffect(() => { load(); }, [ctx.origin, type, machineId, operationId]);   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { api("/demo/evaluation").then(setEv).catch(() => setEv(null)); }, [rows.length]);
   const recompute = async () => {
     setMsg("Recalculando…");
@@ -34,9 +35,10 @@ export function AlertsTab({ ctx }: { ctx: Ctx }) {
         {(ctx.role === "analyst" || ctx.role === "admin") && (<>
           <label className="chk"><input type="checkbox" checked={ml} onChange={(e) => setMl(e.target.checked)} /> incluir ML (IsolationForest, experimental)</label>
           <button onClick={recompute} data-testid="recompute">Recalcular alertas</button></>)}
+        {(machineId || operationId) && <span className="chip" data-testid="alerts-filter">{machineId ? `Máquina ${machineId}` : `Operação ${operationId}`}{onClearParams && <button className="link" onClick={onClearParams}>limpar filtro</button>}</span>}
         <span className="muted">{msg}</span>
       </div>
-      <table data-testid="alerts-table"><thead><tr><th>Início (UTC)</th><th>Situação</th><th>Máquina</th><th>Origem</th><th>Tipo</th><th>Duração</th><th>Evidência</th></tr></thead>
+      <div className="table-wrap"><table data-testid="alerts-table"><thead><tr><th>Início (UTC)</th><th>Situação</th><th>Máquina</th><th>Origem</th><th>Tipo</th><th>Duração</th><th>Evidência</th></tr></thead>
         <tbody>{rows.map((a) => (
           <tr key={a.id} className={a.severity}>
             <td>{a.start.replace("T", " ").slice(0, 19)}</td>
@@ -45,11 +47,11 @@ export function AlertsTab({ ctx }: { ctx: Ctx }) {
             <td title={a.message}><b>{LABEL[a.type] ?? a.type}</b>{a.experimental && " ⚗"}<br /><small>{a.message}</small>{a.severity === "critical" && <><br /><small className="muted">{a.note}</small></>}</td>
             <td>{fmt(a.duration_s, 0, "s")}</td>
             <td><small>{Object.entries(a.evidence).slice(0, 4).map(([k, v]) => `${k}: ${typeof v === "number" ? fmt(v, 2) : JSON.stringify(v)}`).join(" · ")}</small></td>
-          </tr>))}</tbody></table>
+          </tr>))}</tbody></table></div>
       {!rows.length && <p className="muted">Sem alertas para o filtro. Um analista pode recalcular.</p>}
       {ev && (
         <div className="card inner" data-testid="sim-eval">
-          <h3>Avaliação contra a verdade do simulador <span className="badge" style={{ borderColor: "#b26a00", color: "#b26a00" }}>SIMULADO</span></h3>
+          <h3>Avaliação contra a verdade do simulador <span className="badge origin-simulated">SIMULADO</span></h3>
           <p>Recall nos eventos injetados: <b>{fmt(ev.recall !== null ? ev.recall * 100 : null, 0, "%")}</b> ({ev.events.filter((e: any) => e.detected).length}/{ev.events.length}). Alertas sem evento correspondente: {ev.unmatched_alerts.length}.</p>
           <p className="muted">{ev.caveat}</p>
         </div>)}
