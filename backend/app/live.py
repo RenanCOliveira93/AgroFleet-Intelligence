@@ -4,6 +4,10 @@ Etapa 5: além das regras de evento, avalia os alertas operacionais (energia, au
 operação ativa, no máximo a cada ``eval_interval_s`` por máquina, e roda um vigia de conexão a cada
 ``WATCHDOG_S`` segundos mesmo sem mensagens (uma máquina que para de enviar não dispara nada pela ingestão).
 
+Etapa 6: com cliente WebSocket conectado, envia ``operation_status`` (o corpo de ``GET /operations/{id}/status``) da
+operação corrente de cada máquina, no máximo a cada ``status_interval_s``; também no ciclo do vigia, porque o estado
+da conexão muda com o tempo sem dado novo. Status, alertas e WebSocket usam o mesmo cálculo incremental (``ops_cache``).
+
 Fila em memória (queue.Queue): se o processo cair, mensagens ainda não gravadas se perdem; o QoS 1 do MQTT só protege
 até o ACK do cliente, não até o commit no banco (limitação documentada em docs/GUIA_TECNICO.md, seção 10).
 """
@@ -22,6 +26,7 @@ from agrofleet.analytics.frame import to_frame
 from agrofleet.schema import ENGINE_ENERGY_FIELDS, TelemetryPoint
 
 from .db import AlertRow, RejectRow, get_setting, insert_points, load_frame
+from .ops_cache import OperationCache
 
 KEEP_REJECTS = 500
 WATCHDOG_S = 30.0
@@ -73,10 +78,13 @@ class Live:
         self.rejects: queue.Queue = queue.Queue()
         self.clients: set = set()
         self.last_seen: dict[str, float] = {}
-        self.stats = {"queued": 0, "stored": 0, "dropped_queue_full": 0, "batches": 0, "ops_evaluations": 0, "watchdog_runs": 0}
+        self.stats = {"queued": 0, "stored": 0, "dropped_queue_full": 0, "batches": 0, "ops_evaluations": 0, "watchdog_runs": 0,
+                      "status_messages": 0}
         self._task: asyncio.Task | None = None
         self.settings = None                      # definido por create_app (necessário aos alertas operacionais)
+        self.ops_cache = OperationCache()         # Etapa 6: quadro e missão incrementais por operação
         self._last_ops_eval: dict[tuple[str, str], float] = {}
+        self._last_status: dict[tuple[str, str], float] = {}
         self._last_watchdog = time.monotonic()
 
     # chamado pela thread do MQTT
@@ -171,33 +179,68 @@ class Live:
         return out
 
     def evaluate_operations(self, s, last: dict) -> list[dict]:
-        """Alertas operacionais das máquinas do lote que têm operação ativa da mesma origem (com intervalo mínimo)."""
+        """Operação corrente de cada máquina do lote: alertas operacionais (no máximo a cada ``eval_interval_s``) e
+        mensagem ``operation_status`` (no máximo a cada ``status_interval_s``, só com cliente conectado). Um único
+        cálculo da missão, incremental, serve aos dois."""
         if self.settings is None:
             return []
         from . import op_alerts_service as OPS
-        from .db import OperationRow
+        from .operations_api import operation_state
         out = []
         every = OPS.ops_config(s).eval_interval_s
+        st_every = self.settings.status_interval_s
         now = time.monotonic()
         for mid, p in last.items():
             key = (mid, p.origin)
-            if now - self._last_ops_eval.get(key, -1e9) < every:
+            need_eval = now - self._last_ops_eval.get(key, -1e9) >= every
+            need_status = bool(self.clients) and now - self._last_status.get(key, -1e9) >= st_every
+            if not (need_eval or need_status):
                 continue
-            ops = s.execute(select(OperationRow.id).where(OperationRow.machine_id == mid, OperationRow.origin == p.origin,
-                                                          OperationRow.status == "active")).scalars().all()
-            self._last_ops_eval[key] = now
-            for op_id in ops:
-                trs, _sk, _st = OPS.evaluate(s, op_id, self, self.settings)
+            if need_eval:
+                self._last_ops_eval[key] = now
+            if need_status:
+                self._last_status[key] = now
+            cur = OPS.current_operations(s, p.origin, mid).get((p.origin, mid))
+            if cur is None:                                  # só a operação corrente é dona do estado ao vivo
+                continue
+            state = operation_state(s, cur.id, None, self, self.settings)
+            if need_eval:
+                trs, _sk, _st = OPS.evaluate(s, cur.id, self, self.settings, opstate=state)
                 self.stats["ops_evaluations"] += 1
                 out += [{"type": "alert", "alert": a} for a in trs]
-            s.commit()
+                s.commit()
+            if need_status:
+                out.append(self.status_message(s, state))
         return out
 
+    def status_message(self, s, state) -> dict:
+        """Mensagem ``operation_status``: o mesmo corpo de ``GET /operations/{id}/status`` (aditiva; clientes antigos
+        ignoram tipos que não conhecem)."""
+        from .main import clean
+        from .operations_api import status_payload
+        self.stats["status_messages"] += 1
+        return {"type": "operation_status", "operation_id": state.op.operation_id, "machine_id": state.op.machine_id,
+                "origin": state.op.origin, "status": clean(status_payload(s, state, self.settings))}
+
     def run_watchdog(self) -> list[dict]:
+        """Vigia de conexão e, com cliente conectado, status das operações correntes: a conexão passa de "conectado" a
+        "atrasado" e "sem conexão" com o tempo, mesmo sem nenhum dado novo."""
         from . import op_alerts_service as OPS
+        from .operations_api import operation_state
         with self.sf() as s:
             self.stats["watchdog_runs"] += 1
-            return [{"type": "alert", "alert": a} for a in OPS.watchdog(s, self, self.settings)]
+            out = [{"type": "alert", "alert": a} for a in OPS.watchdog(s, self, self.settings)]
+            if self.clients:
+                now = time.monotonic()
+                for (origin, mid), row in OPS.current_operations(s).items():
+                    if now - self._last_status.get((mid, origin), -1e9) < self.settings.status_interval_s:
+                        continue
+                    self._last_status[(mid, origin)] = now
+                    try:
+                        out.append(self.status_message(s, operation_state(s, row.id, None, self, self.settings)))
+                    except Exception as e:                   # uma operação com problema não cala as outras
+                        self.stats["last_error"] = repr(e)
+            return out
 
     def window_s(self, s) -> int:
         return int(get_setting(s, "alert_window_s", 600))

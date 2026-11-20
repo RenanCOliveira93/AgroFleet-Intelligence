@@ -39,6 +39,7 @@ from .db import (AlertRow, FieldRow, MachineProfileRow, OperationRow, PropertyRo
 from .live import Live, alert_config, alert_to_dict, upsert_alert
 from . import op_alerts_service as OPS
 from .operations_api import build_operations_router
+from .ops_cache import OperationCache
 from .registry_api import build_router, labels_for_machine, upsert_machine, upsert_operation, upsert_property
 
 
@@ -109,6 +110,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     tokens = Tokens(st.auth_secret, st.token_ttl_s)
     live = Live(SF)
     live.settings = st
+    live.ops_cache = OperationCache(st.ops_cache_size)
     mqtt_ref: dict = {}
 
     with SF() as s:
@@ -168,7 +170,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "ok", "schema_version": SCHEMA_VERSION, "db": engine.dialect.name, "postgis": engine.dialect.name == "postgresql",
                 "mqtt": {"enabled": bool(st.mqtt_host), "connected": bool(mqtt_ref.get("src") and mqtt_ref["src"].connected.is_set()),
                          **(mqtt_ref["src"].stats if mqtt_ref.get("src") else {})},
-                "ingest": live.stats, "auth_secret_generated": tokens.generated}
+                "ingest": live.stats, "ops_cache": live.ops_cache.stats, "auth_secret_generated": tokens.generated}
 
     @app.get("/limits", tags=["meta"])
     def limits():
@@ -417,7 +419,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for op_row in s.execute(q).scalars().all():
                 if ids and op_row.machine_id not in ids:
                     continue
-                tr, sk, _st = OPS.replay(s, op_row.id, live, st)
+                tr, sk, _st, _p = OPS.replay(s, op_row.id, live, st)
                 ops_out["operations"].append(op_row.id); ops_out["transitions"] += len(tr); ops_out["skipped_rules"] += sk
         return clean({"alerts": len(res.alerts), "skipped_rules": res.skipped_rules, "config": asdict(cfg), "operational": ops_out})
 
@@ -463,9 +465,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def ops_replay(operation_id: str, end: datetime | None = None, window_s: float = Query(None, ge=0, le=86400),
                    step_s: float = Query(None, gt=0, le=3600), _=Depends(analyst), s=Depends(session)):
         """Reconstrói os alertas operacionais da operação (estado novo). Padrão: só a janela de confirmação no fim
-        dos dados. Para auditar a operação inteira, informe window_s (custo: uma avaliação completa por passo)."""
-        tr, sk, state = OPS.replay(s, operation_id, live, st, _utc(end), window_s, step_s)
-        return clean({"transitions": tr, "skipped_rules": sk,
+        dos dados. Para auditar a operação inteira, informe window_s (custo: uma avaliação completa por passo).
+
+        Com ``end`` anterior ao último dado é auditoria: nada é gravado (``persisted = false``). Sem ``end``, substitui
+        os alertas desta operação; o estado ao vivo da máquina só é trocado se ela for a operação corrente."""
+        tr, sk, state, persisted = OPS.replay(s, operation_id, live, st, _utc(end), window_s, step_s)
+        return clean({"transitions": tr, "skipped_rules": sk, "persisted": persisted,
                       "active": {f: (v["active"] or {}).get("severity") for f, v in (state or {}).items()}})
 
     # ---------- upload ----------
@@ -592,7 +597,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         alerts_ = {}
         if with_telemetry and with_alerts:          # alertas operacionais sustentados no fim dos dados (Etapa 5)
             for r in results:
-                tr, _sk, state = OPS.replay(s, r.operation.operation_id, live, st)
+                tr, _sk, state, _p = OPS.replay(s, r.operation.operation_id, live, st)
                 alerts_[r.operation.operation_id] = {f: (v["active"] or {}).get("severity") for f, v in (state or {}).items()
                                                      if (v["active"] or {}).get("severity")}
         return {"origin": "simulated", "start": st0.isoformat(), "hours": hours, "seed": seed, "stored": stored,
@@ -607,6 +612,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         n = s.execute(delete(TelemetryRow).where(TelemetryRow.origin == origin)).rowcount
         a = s.execute(delete(AlertRow).where(AlertRow.origin == origin)).rowcount
         OPS.delete_states(s, origin)
+        live.ops_cache.clear()                # o cache se corrigiria sozinho (confere o dado); aqui só libera memória
         f = s.execute(delete(FieldRow).where(FieldRow.origin == origin)).rowcount
         o = s.execute(delete(OperationRow).where(OperationRow.origin == origin)).rowcount
         mp = s.execute(delete(MachineProfileRow).where(MachineProfileRow.origin == origin)).rowcount
@@ -689,7 +695,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ---------- WebSocket ----------
     @app.websocket("/ws")
     async def ws(sock: WebSocket):
-        """Primeira mensagem: {"type":"auth","token":"..."} em até 5 s. Depois recebe 'telemetry' e 'alert' (somente servidor->cliente)."""
+        """Primeira mensagem: {"type":"auth","token":"..."} em até 5 s. Depois recebe 'telemetry', 'alert' e (Etapa 6)
+        'operation_status' (somente servidor->cliente)."""
         await sock.accept()
         try:
             first = await asyncio.wait_for(sock.receive_json(), 5)

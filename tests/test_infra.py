@@ -137,6 +137,62 @@ def test_ponta_a_ponta_mqtt_para_banco_alertas_e_websocket():
         c.delete("/data", params={"origin": "simulated"}, headers=hadm)
 
 
+@pytest.mark.skipif(not (PG and MQ), reason="requer PG e MQTT reais")
+def test_operation_status_pelo_websocket_com_cache_no_postgis():
+    """Etapa 6: MQTT → fila → PostGIS → missão incremental → WebSocket ``operation_status``. O quadro é lido por
+    ``ingested_at`` (TIMESTAMPTZ) só com as linhas novas, e o status com cache é igual ao cálculo completo."""
+    from agrofleet.simulator.fleet import DEFAULT_START
+    from agrofleet.simulator.operations import scenario_a, simulate_operation
+    from backend.app.main import clean
+    from backend.app.operations_api import operation_state, status_payload
+    from tests.test_incremental import same
+    host, port = MQ.split(":")
+    st = Settings(database_url=PG, auth_secret=SECRET, users=USERS, mqtt_host=host, mqtt_port=int(port), mqtt_user=MQ_ING[0],
+                  mqtt_password=MQ_ING[1], status_interval_s=1.0)
+    with TestClient(create_app(st)) as c:
+        hadm = _login(c, "admin")
+        c.delete("/data", params={"origin": "simulated"}, headers=hadm)
+        r = c.post("/demo/operations/load", params={"scenarios": "A", "hours": 0.5, "start": DEFAULT_START.isoformat(),
+                                                    "with_telemetry": False}, headers=hadm)
+        assert r.status_code == 200 and r.json()["stored"] == 0
+        t0 = time.time()
+        while not c.get("/health").json()["mqtt"]["connected"] and time.time() - t0 < 10:
+            time.sleep(0.2)
+        pts = simulate_operation(scenario_a(), max_seconds=1800).points
+        token = _login(c, "viewer")["Authorization"].split()[1]
+        got = []
+        with c.websocket_connect("/ws") as w:
+            w.send_json({"type": "auth", "token": token}); assert w.receive_json()["type"] == "hello"
+            pub = MqttPublisher(host, int(port), username=MQ_DEV[0], password=MQ_DEV[1])
+            for k in range(0, len(pts), 300):                 # 5 lotes de 5 min de dado, com pausa entre eles
+                for p in pts[k:k + 300]:
+                    pub.publish_point(p)
+                time.sleep(1.5)
+            t0 = time.time()
+            while time.time() - t0 < 30:
+                m = w.receive_json()
+                if m["type"] == "operation_status":
+                    got.append(m)
+                    if m["status"]["n_samples"] == len(pts):
+                        break
+            pub.close()
+        assert got and got[-1]["status"]["n_samples"] == len(pts) and got[-1]["operation_id"] == "OP-SIM-A"
+        assert len({m["status"]["n_samples"] for m in got}) > 1                       # chegou mais de um estado ao longo da ingestão
+        live = c.app.state.live
+        assert live.ops_cache.stats["frame_deltas"] > 0
+
+        class NoCache:
+            ops_cache = None
+            is_live = live.is_live
+        drop = {"evaluated_at", "connection", "alerts"}
+        with c.app.state.SF() as s:
+            a = clean(status_payload(s, operation_state(s, "OP-SIM-A", None, live, st), st))
+            b = clean(status_payload(s, operation_state(s, "OP-SIM-A", None, NoCache(), st), st))
+        assert not same({k: v for k, v in a.items() if k not in drop}, {k: v for k, v in b.items() if k not in drop})
+        assert a["mission"]["worked_ha"] > 0
+        c.delete("/data", params={"origin": "simulated"}, headers=hadm)
+
+
 @pytest.mark.skipif(not PG, reason="AGROFLEET_TEST_PG_URL não definido")
 def test_migracao_aditiva_1_0_para_1_1_no_postgis():
     """Banco criado no schema 1.0 (com a coluna gerada geom do PostGIS) recebe as colunas 1.1 sem perder dados.

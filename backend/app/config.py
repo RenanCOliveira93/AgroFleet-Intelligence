@@ -27,4 +27,8 @@ class Settings:
     max_upload_mb: int = field(default_factory=lambda: int(_env("AGROFLEET_MAX_UPLOAD_MB", "50")))
     cors_origins: list = field(default_factory=lambda: [o for o in (_env("AGROFLEET_CORS_ORIGINS", "") or "").split(",") if o])
     live_window_s: int = 30
+    # Etapa 6: intervalo mínimo entre mensagens WebSocket ``operation_status`` da mesma operação, e quantas operações
+    # o cache incremental mantém em memória (LRU; medido: ~40 MB por operação de 5 h, ~65 MB de 12 h)
+    status_interval_s: float = field(default_factory=lambda: float(_env("AGROFLEET_STATUS_INTERVAL_S", "5")))
+    ops_cache_size: int = field(default_factory=lambda: int(_env("AGROFLEET_OPS_CACHE_SIZE", "8")))
     alert_window_s: int = field(default_factory=lambda: int(_env("AGROFLEET_ALERT_WINDOW_S", "600")))

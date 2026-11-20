@@ -106,12 +106,67 @@ def _q(v, q):
     return float(np.percentile(v, q)) if len(v) else None
 
 
+@dataclass
+class _BucketCtx:
+    B: float; span: float; nb: int; seg: object; seg_t: np.ndarray; fld: object
+    tsec: np.ndarray; dt: np.ndarray; valid: np.ndarray; states: np.ndarray
+    g: pd.DataFrame; t_start: pd.Timestamp; first_off: float; max_gap_s: float
+    gts: np.ndarray | None = None       # g["ts"] em datetime64 (ordenado): fatia por busca binária
+
+
+def bucket_entry(c: _BucketCtx, i: int, cum, prev_ha: float):
+    """Intervalo ``i`` da série. ``cum`` = união (∩ talhão) dos intervalos anteriores; ``prev_ha`` = soma das áreas
+    novas anteriores. Retorna (entrada ou None, novo ``cum``). Usado pelo cálculo completo e pelo incremental."""
+    a, b = i * c.B, min((i + 1) * c.B, c.span)
+    if b <= a:
+        return None, cum
+    # tudo ordenado no tempo: fatias por busca binária (as mesmas linhas, na mesma ordem, de uma máscara booleana;
+    # a máscara sobre o quadro inteiro custava O(intervalos × amostras))
+    s0 = int(np.searchsorted(c.seg_t, a, "left"))
+    s1 = int(np.searchsorted(c.seg_t, b, "left")) if i < c.nb - 1 else len(c.seg_t)
+    new = 0.0
+    if s1 > s0:
+        piece = unary_union(run_swaths(subset(c.seg, slice(s0, s1))))
+        if c.fld is not None:
+            piece = piece.intersection(c.fld)
+        if cum is not None and not piece.is_empty:
+            local = cum.intersection(box(*piece.bounds))
+            fresh = piece.difference(local)
+        else:
+            fresh = piece
+        new = ha(fresh.area)
+        cum = piece if cum is None else unary_union([cum, piece])
+    k0, k1 = int(np.searchsorted(c.tsec, a, "left")), int(np.searchsorted(c.tsec, b, "left"))
+    dt, valid, st = c.dt[k0:k1], c.valid[k0:k1], c.states[k0:k1]
+    obs = float(dt[valid].sum())
+    nodata = float(dt[~valid & (dt > 0)].sum()) + (max(min(c.first_off, b) - a, 0.0) if i == 0 else 0.0)
+    wk = float(dt[valid & (st == "working")].sum())
+    t0, t1 = c.t_start + pd.Timedelta(seconds=a), c.t_start + pd.Timedelta(seconds=b)
+    gts = c.gts if c.gts is not None else c.g["ts"].values
+    gb = c.g.iloc[int(np.searchsorted(gts, t0.to_datetime64(), "left")):int(np.searchsorted(gts, t1.to_datetime64(), "left"))]
+    fuel, _ = time_weighted_mean(gb, "fuel_rate_lph", "q_fuel_rate", c.max_gap_s)
+    power, _ = time_weighted_mean(gb, "battery_power_kw", "q_battery", c.max_gap_s)
+    return {
+        "t_start": t0.isoformat(), "t_end": t1.isoformat(),
+        "complete": (b - a) >= c.B - 1e-6, "new_ha": new, "observed_h": obs / 3600, "no_data_h": nodata / 3600,
+        "working_h": wk / 3600, "ha_per_h": new / (obs / 3600) if obs > 0 else None,
+        "ha_per_working_h": new / (wk / 3600) if wk > 0 else None,
+        "fuel_rate_lph": fuel, "battery_power_kw": power,
+        "cumulative_ha": prev_ha + new}, cum
+
+
 def mission(df: pd.DataFrame, op: OperationPlan, field_lonlat: dict | None = None, cfg: MissionConfig | None = None,
-            data_age_s: float | None = None) -> MissionResult:
+            data_age_s: float | None = None, cache=None) -> MissionResult:
+    """``cache``: ``incremental.MissionCache`` da operação (opcional). Com ele, só a cauda recente é recalculada; o
+    resultado é o mesmo do cálculo completo (testado em ``tests/test_incremental.py``)."""
     cfg = cfg or MissionConfig()
     g = operation_frame(df, op)
     seg = build_segments(g, cfg.coverage) if len(g) else None
-    cov = coverage_from_segments(seg, field_lonlat, with_geojson=False) if seg is not None else None
+    if cache is not None and seg is not None and len(g) >= 2:
+        cov = cache.coverage(g, seg, op, field_lonlat, cfg)
+    else:
+        cache = None
+        cov = coverage_from_segments(seg, field_lonlat, with_geojson=False) if seg is not None else None
     fld = cov.field_geom if cov is not None and cov.field_geom is not None else None
 
     # ---- áreas -----------------------------------------------------------------------------------------------
@@ -171,40 +226,21 @@ def mission(df: pd.DataFrame, op: OperationPlan, field_lonlat: dict | None = Non
     # ---- série por intervalo ---------------------------------------------------------------------------------
     B = cfg.bucket_min * 60
     span = (last - t_start).total_seconds()
-    nb = max(int(np.ceil(span / B)), 1)
-    seg_t = seg.t0 - t_start.timestamp()
-    cum = None
-    for i in range(nb):
-        a, b = i * B, min((i + 1) * B, span)
-        if b <= a:
-            continue
-        sm = (seg_t >= a) & (seg_t < b) if i < nb - 1 else (seg_t >= a)
-        new = 0.0
-        if sm.any():
-            piece = unary_union(run_swaths(subset(seg, sm)))
-            if fld is not None:
-                piece = piece.intersection(fld)
-            if cum is not None and not piece.is_empty:
-                local = cum.intersection(box(*piece.bounds))
-                fresh = piece.difference(local)
-            else:
-                fresh = piece
-            new = ha(fresh.area)
-            cum = piece if cum is None else unary_union([cum, piece])
-        im = (tsec >= a) & (tsec < b)
-        obs = float(dt[im & valid].sum())
-        nodata = float(dt[im & ~valid & (dt > 0)].sum()) + (max(min(first_off, b) - a, 0.0) if i == 0 else 0.0)
-        wk = float(dt[im & valid & (states == "working")].sum())
-        gb = g[(g["ts"] >= t_start + pd.Timedelta(seconds=a)) & (g["ts"] < t_start + pd.Timedelta(seconds=b))]
-        fuel, _ = time_weighted_mean(gb, "fuel_rate_lph", "q_fuel_rate", cfg.coverage.max_gap_s)
-        power, _ = time_weighted_mean(gb, "battery_power_kw", "q_battery", cfg.coverage.max_gap_s)
-        res.series.append({
-            "t_start": (t_start + pd.Timedelta(seconds=a)).isoformat(), "t_end": (t_start + pd.Timedelta(seconds=b)).isoformat(),
-            "complete": (b - a) >= B - 1e-6, "new_ha": new, "observed_h": obs / 3600, "no_data_h": nodata / 3600,
-            "working_h": wk / 3600, "ha_per_h": new / (obs / 3600) if obs > 0 else None,
-            "ha_per_working_h": new / (wk / 3600) if wk > 0 else None,
-            "fuel_rate_lph": fuel, "battery_power_kw": power,
-            "cumulative_ha": sum(s["new_ha"] for s in res.series) + new})
+    ctx = _BucketCtx(B=B, span=span, nb=max(int(np.ceil(span / B)), 1), seg=seg, seg_t=seg.t0 - t_start.timestamp(),
+                     fld=fld, tsec=tsec, dt=dt, valid=valid, states=states, g=g, t_start=t_start, first_off=first_off,
+                     max_gap_s=cfg.coverage.max_gap_s, gts=g["ts"].values)
+    if cache is not None:
+        res.series, cum = cache.series_prefix(ctx, bucket_entry)      # intervalos congelados (idênticos ao cálculo completo)
+    else:
+        cum = None
+    acc = 0.0                                  # soma corrente (a soma refeita a cada intervalo era quadrática)
+    for s_ in res.series:
+        acc += s_["new_ha"]
+    for i in range(len(res.series), ctx.nb):
+        e, cum = bucket_entry(ctx, i, cum, acc)
+        if e is not None:
+            res.series.append(e)
+            acc += e["new_ha"]
 
     # ---- ritmo, faixa e ETA ----------------------------------------------------------------------------------
     k = max(int(np.ceil(cfg.rate_window_min / cfg.bucket_min)), 1)

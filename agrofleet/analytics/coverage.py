@@ -117,7 +117,7 @@ def swath_polygons(s: Segments) -> list[Polygon]:
 
 
 def subset(s: Segments, mask: np.ndarray) -> Segments:
-    """Segmentos selecionados por máscara booleana (mesma projeção)."""
+    """Segmentos selecionados por máscara booleana ou fatia (mesma projeção)."""
     return Segments(s.x0[mask], s.y0[mask], s.x1[mask], s.y1[mask], s.w[mask], s.machine[mask], s.t0[mask],
                     excluded=dict(s.excluded), proj=s.proj, idx=None if s.idx is None else s.idx[mask])
 
@@ -134,10 +134,17 @@ def run_swaths(s: Segments) -> list:
         return []
     if s.idx is None:
         return swath_polygons(s)
+    keep, runs = run_bounds(s)
+    return [run_polygon(s, keep[i0:i1]) for i0, i1 in runs]
+
+
+def run_bounds(s: Segments) -> tuple[np.ndarray, list[tuple[int, int]]]:
+    """Segmentos com comprimento (``keep``, índices em ``s``) e os trechos contínuos como intervalos [i0, i1) de
+    posições em ``keep``. Exige ``idx``."""
     L = np.hypot(s.x1 - s.x0, s.y1 - s.y0)
     keep = np.where(L > 1e-6)[0]
     if not len(keep):
-        return []
+        return keep, []
     brk = np.ones(len(keep), bool)
     if len(keep) > 1:
         a, b = keep[:-1], keep[1:]
@@ -145,13 +152,14 @@ def run_swaths(s: Segments) -> list:
         brk[1:] = ~cont
     starts = np.flatnonzero(brk)
     ends = np.append(starts[1:], len(keep))
-    out = []
-    for i0, i1 in zip(starts, ends):
-        k = keep[i0:i1]
-        xs = np.concatenate([[s.x0[k[0]]], s.x1[k]]); ys = np.concatenate([[s.y0[k[0]]], s.y1[k]])
-        line = shapely.linestrings(np.stack([xs, ys], -1))
-        out.append(shapely.buffer(line, float(s.w[k[0]]) / 2, cap_style="flat", join_style="round", quad_segs=4))
-    return out
+    return keep, list(zip(starts.tolist(), ends.tolist()))
+
+
+def run_polygon(s: Segments, k: np.ndarray):
+    """Faixa de um trecho contínuo (``k``: índices dos segmentos em ``s``, em ordem)."""
+    xs = np.concatenate([[s.x0[k[0]]], s.x1[k]]); ys = np.concatenate([[s.y0[k[0]]], s.y1[k]])
+    line = shapely.linestrings(np.stack([xs, ys], -1))
+    return shapely.buffer(line, float(s.w[k[0]]) / 2, cap_style="flat", join_style="round", quad_segs=4)
 
 
 @dataclass
@@ -172,6 +180,15 @@ class CoverageResult:
     union_geom: object = field(default=None, repr=False)
     field_geom: object = field(default=None, repr=False)
     proj: Projector | None = field(default=None, repr=False)
+    # cálculo incremental (Etapa 6): a união fica em partes (congelada + cauda) e só é montada se alguém pedir
+    union_parts: tuple | None = field(default=None, repr=False)
+
+    def union(self):
+        """União das faixas em metros (monta a partir das partes, uma vez, se o cálculo foi incremental)."""
+        if self.union_geom is None and self.union_parts:
+            parts = [p for p in self.union_parts if p is not None and not p.is_empty]
+            self.union_geom = unary_union(parts) if parts else Polygon()
+        return self.union_geom
 
     def summary(self) -> dict:
         d = {"gross_ha": ha(self.gross_m2), "unique_ha": ha(self.unique_m2), "excess_ha": ha(self.excess_m2),
@@ -185,13 +202,14 @@ class CoverageResult:
         return d
 
 
-def overlap_region(polys: list[Polygon], mach: np.ndarray, t0: np.ndarray, skip_s: float):
-    """União das interseções entre faixas NÃO adjacentes no tempo (mesma máquina e |Δt| <= skip_s são vizinhas de
-    trajetória: a interseção delas é só a junção do traçado, não repasse)."""
-    if len(polys) < 2:
-        return None
-    tree = STRtree(polys)
-    left, right = tree.query(polys, predicate="intersects")
+def overlap_skip_s(t0: np.ndarray) -> float:
+    """Vizinhança de trajetória: 4× o intervalo mediano entre inícios de segmento."""
+    dts = np.diff(np.sort(t0)); dts = dts[dts > 0]
+    return 4 * float(np.median(dts)) if len(dts) else 4.0
+
+
+def overlap_pieces(polys: list, left, right, mach: np.ndarray, t0: np.ndarray, skip_s: float) -> list:
+    """Interseções dos pares (i, j), j > i, que não são vizinhos de trajetória (índices globais em ``polys``)."""
     pieces = []
     for i, j in zip(left, right):
         if j <= i:
@@ -201,6 +219,17 @@ def overlap_region(polys: list[Polygon], mach: np.ndarray, t0: np.ndarray, skip_
         inter = polys[i].intersection(polys[j])
         if not inter.is_empty and inter.area > 1e-3:
             pieces.append(inter)
+    return pieces
+
+
+def overlap_region(polys: list[Polygon], mach: np.ndarray, t0: np.ndarray, skip_s: float):
+    """União das interseções entre faixas NÃO adjacentes no tempo (mesma máquina e |Δt| <= skip_s são vizinhas de
+    trajetória: a interseção delas é só a junção do traçado, não repasse)."""
+    if len(polys) < 2:
+        return None
+    tree = STRtree(polys)
+    left, right = tree.query(polys, predicate="intersects")
+    pieces = overlap_pieces(polys, left, right, mach, t0, skip_s)
     return unary_union(pieces) if pieces else None
 
 
@@ -216,8 +245,7 @@ def coverage_from_segments(s: Segments, field_lonlat: dict | None = None, with_g
     excess = max(gross - uni.area, 0.0)
     keep = L > 1e-6
     t0 = s.t0[keep]
-    dts = np.diff(np.sort(t0)); dts = dts[dts > 0]
-    skip_s = 4 * float(np.median(dts)) if len(dts) else 4.0
+    skip_s = overlap_skip_s(t0)
     ov = overlap_region(polys, s.machine[keep], t0, skip_s)
     res = CoverageResult(gross, float(uni.area), excess, float(ov.area) if ov is not None else 0.0, len(polys), s.excluded, None, None)
     proj = s.proj

@@ -201,3 +201,65 @@ Executadas juntas, a pedido. A interface recebeu apenas uma adição mínima (no
 - Cada avaliação ao vivo recalcula a missão (1 a 7 s conforme a duração da operação). Com muitas máquinas, o intervalo de 30 s pode não ser cumprido; o cache da Etapa 6 resolve.
 - O alerta exibido em `/status` com `as_of` é o estado atual, não o daquele instante (o histórico completo exige replay com `window_s`).
 - O estado ao vivo fica em um processo; com várias réplicas da API, cada uma avaliaria a mesma máquina (implantação atual: uma réplica).
+
+## Etapa 6 — API, streaming e cache ✅
+
+**Objetivo.** Entregar o estado da operação por WebSocket (`operation_status`, com limite de frequência), sem mudar as mensagens atuais, e tornar o cálculo barato o bastante para o laço ao vivo, com teste de carga de 120 ha / 5 h. O `GET /operations/{id}/status` e o `/geometry` já existiam (Etapa 4).
+
+**Correção da revisão do PR #2 (Codex, P1).** O replay de alertas apagava o estado ao vivo da máquina inteira e gravava por cima o estado da reprodução. Com isso, os alertas ativos de outra operação ficavam órfãos, e as avaliações seguintes podiam duplicá-los ou atualizar o alerta da operação errada.
+- **Auditoria** (`end` antes do último dado): não grava nada (`persisted=false`).
+- **Reconstrução**: só troca o estado ao vivo se a operação for a corrente da máquina, a ativa de início mais recente.
+- **Laço ao vivo e vigia**: avaliam só a operação corrente.
+- **Troca de operação**: o alerta da operação anterior é encerrado, não herdado.
+- 4 testes reproduzem o cenário apontado.
+
+**Alterações**
+
+| Arquivo | Mudança |
+|---|---|
+| `agrofleet/analytics/incremental.py` (novo) | `MissionCache`: congela o passado (intervalos da série, trechos contínuos decididos, faixas e sobreposições antes do corte) e recalcula só a cauda. Confere o hash do dado anterior ao corte a cada chamada e recomeça do zero se algo mudou. |
+| `agrofleet/analytics/mission.py` | `mission(..., cache=)` opcional; o corpo de cada intervalo virou `bucket_entry`, compartilhado pelo cálculo completo e pelo incremental (mesmas operações, mesma ordem). Sem `cache`, o resultado não muda. |
+| `agrofleet/analytics/coverage.py` | Extraídos `run_bounds`, `run_polygon`, `overlap_pieces` e `overlap_skip_s` (reúso; o resultado não muda). `CoverageResult.union()` monta a união em partes só quando pedida. |
+| `backend/app/ops_cache.py` (novo) | Cache por operação no processo (LRU): quadro lido do banco só com as linhas novas (`ingested_at`, conferido pela contagem), missão incremental (presente e `as_of` separados) e resposta de `/geometry`. |
+| `backend/app/operations_api.py` | `operation_state` (um cálculo para vários consumidores) e `status_payload`; `/status` e `/geometry` usam o cache. |
+| `backend/app/live.py` | `operation_status` por WebSocket com cliente conectado, no máximo a cada `AGROFLEET_STATUS_INTERVAL_S` (5 s) por operação, e também no ciclo do vigia. Alertas e status compartilham o mesmo cálculo. |
+| `backend/app/op_alerts_service.py`, `agrofleet/analytics/op_alerts.py` | Correção do replay (acima); avaliação reaproveita o cálculo do status. |
+| `backend/app/config.py`, `db.py`, `main.py` | `AGROFLEET_STATUS_INTERVAL_S`, `AGROFLEET_OPS_CACHE_SIZE` (8); `load_frame(ingested_since=)`; contadores do cache em `/health`. |
+| `scripts/bench_operations.py` (novo) | Teste de carga; resultados em `experiments/bench_operations.json` (SQLite) e `bench_operations_postgis.json`. |
+| `tests/test_incremental.py` (6), `tests/test_streaming.py` (8), `tests/test_op_alerts.py` (+4), `tests/test_infra.py` (+1) | Igualdade incremental × completo, cache do backend, WebSocket e correção do replay. |
+| `docs/GUIA_TECNICO.md` | 2.2, 4.3, 5.4, 7.9, 7.10, 7.11 (novo), 8.7.1 (novo) e 10. |
+
+**Antes e depois** (cenário A, 120 ha)
+
+| Medida | Antes | Depois |
+|---|---|---|
+| Missão com 5 h / 12 h de dado | 1,9 s / 6,5 s | 0,12 s / 0,16 s (cache quente) |
+| `GET /status` com 5 h (SQLite / PostGIS) | 2,3 s / 2,7 s | 0,13 s / 0,19 s (p50 ao longo da operação) |
+| Avaliação ao vivo (lote de 30 s, com gravação, regras, alertas e status) | 1 a 7 s só na missão | 0,13 s p50, 0,26 s p95 (SQLite); 0,22 / 0,39 s (PostGIS) |
+| `GET /geometry` repetido sem dado novo | 2,3 s | 0,02 s (SQLite) / 0,08 s (PostGIS) |
+| Carga da demo (A, B, C, 3 h) | 15,3 s | 12,2 s |
+
+**Decisões técnicas**
+- **Incremental exato, não aproximado.** Cada parte congelada depende só de amostras anteriores ao corte. O corte é verificado pelo dado (hash), não presumido pelo relógio, e um descarte custa só tempo, nunca exatidão. A igualdade com o cálculo completo é testada campo a campo, inclusive com falhas de enlace e chegada tardia.
+- **Tolerância de 1e-6 relativo.** O GEOS dá áreas diferentes ao unir as mesmas peças em outra ordem. O próprio cálculo completo varia 1e-5 m² na região ≥2× de 5 h, e o incremental fica nessa ordem. Isso foi medido antes de ajustar a tolerância.
+- **Dois caches por operação.** Um para o presente e outro para `as_of`, para que uma reprodução não descarte o ao vivo. O de `as_of` é liberado ao fim de cada replay.
+- **Um cálculo, três consumidores.** Status, alertas e WebSocket usam o mesmo `operation_state`, e a avaliação de alertas não recalcula a missão.
+- **`operation_status` só com cliente.** Sem ninguém conectado, nada é montado além do que os alertas já exigem.
+
+**Testes**
+
+| Suíte | Resultado |
+|---|---|
+| `pytest` (unitários + API) | **232/232** (214 anteriores, sem alteração de asserções, + 18 novos) |
+| `pytest -m infra` | **6/6** (+1: MQTT → PostGIS → missão incremental → WebSocket `operation_status`, igual ao cálculo completo) |
+| `tsc --noEmit` / `vitest` | OK / 12/12 (frontend não mudou) |
+| Teste de carga 5 h (SQLite e PostGIS) | resultado com cache igual ao completo; números acima e em `GUIA_TECNICO.md` 8.7.1 |
+
+**Riscos remanescentes**
+- **Memória:** cerca de 40 MB por operação de 5 h e 65 MB de 12 h. O padrão de 8 operações limita a cerca de 0,5 GB; acima disso, as menos usadas voltam ao custo do cálculo completo.
+- **Primeira chamada:** a primeira de cada operação, e a primeira depois de um descarte, custa o cálculo completo (2 a 7 s). Reinício da API esvazia o cache.
+- **Amostragem irregular:** com dado real de amostragem irregular, o dt mediano pode oscilar e descartar o cache mais vezes. O resultado continua correto; só fica mais lento. Não medido com dado real.
+- **Escopo do teste de carga:** uma máquina, um computador e PostGIS emulado; muitas máquinas simultâneas não foram medidas. Cache e laço ao vivo continuam em um processo.
+- **Tamanho da mensagem:** `operation_status` tem cerca de 11 KB com 5 h; com muitas operações e clientes, vale filtrar por operação (Etapa 8, quando a tela consumir).
+- **Operação com lacuna de meses:** uma operação deixada "ativa" no cadastro por meses (achado ao recarregar a demo sobre dados de outro dia) gera um intervalo de 10 min para cada trecho do período: 36 mil intervalos em 8 meses. A soma acumulada era quadrática e cada intervalo filtrava o quadro inteiro, e a carga levou 386 s. Corrigido com soma corrente e busca binária, sem mudar o resultado, e testado. O status desse caso fica em 7,7 s frio e 1,3 s quente, e o restante é o tamanho da resposta. Resumir a série na tela (Etapa 8) e encerrar operações no cadastro resolvem.
+- **Alertas previstos e não implementados:** "consumo anormal" e "saída da área planejada", previstos no plano da Etapa 5, não foram implementados, e isso não foi registrado na Etapa 5.

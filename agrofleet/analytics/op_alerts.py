@@ -237,6 +237,16 @@ def step(state: dict | None, s: Snapshot, cfg: OpsAlertConfig | None = None, fam
     for fam in families:
         st = state.setdefault(fam, {"active": None, "pending": {}, "clearing": None})
         act = st["active"]
+        prev_op = st.get("operation_id") or (act or {}).get("operation_id")
+        if s.operation_id is not None and prev_op not in (None, s.operation_id):
+            # a máquina mudou de operação: o que era da anterior é encerrado, nunca herdado nem atualizado com dado
+            # de outra operação; pendências e contagens de saída recomeçam
+            st["pending"], st["clearing"] = {}, None
+            if act:
+                out.append(_close(st, act, s, "resolve", f"Operação {prev_op} deixou de ser a operação corrente da máquina."))
+                act = None
+        if s.operation_id is not None:
+            st["operation_id"] = s.operation_id
         cur = act["severity"] if act else None
         t = RULES[fam](s, cfg, cur)
         if isinstance(t, str):                      # regra não se aplica (configuração ausente)

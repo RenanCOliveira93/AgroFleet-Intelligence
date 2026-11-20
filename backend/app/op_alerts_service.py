@@ -17,7 +17,7 @@ from sqlalchemy import delete, func, select
 from agrofleet.analytics import op_alerts as OA
 
 from .db import AlertRow, OperationRow, SettingRow, TelemetryRow, get_setting
-from .operations_api import STALE_AFTER_S, load_context
+from .operations_api import operation_state
 
 CFG_KEY = "ops_alert_config"
 
@@ -111,16 +111,18 @@ def priority_key(d: dict):
     return (d["status"] != "active", PRIORITY.get(d["severity"], 3), -datetime.fromisoformat(d["end"]).timestamp())
 
 
-def _snapshot(s, operation_id: str, as_of, live, settings):
-    op, prof, fld, fld_geo, df, now, as_of_, age, *_ = load_context(s, operation_id, as_of, live, settings)
-    ts = (as_of_ or now).isoformat()
-    return op, OA.snapshot_from_data(df, op, prof, fld_geo, ts, age)
+def _snapshot(s, operation_id: str, as_of, live, settings, opstate=None):
+    """Entradas das regras. ``opstate``: cálculo já feito (``operations_api.operation_state``), reaproveitado."""
+    st = opstate or operation_state(s, operation_id, as_of, live, settings)
+    ts = (st.as_of or st.now).isoformat()
+    return st.op, OA.snapshot_from_data(st.df, st.op, st.prof, st.fld_geo, ts, st.age, mission_result=st.mission)
 
 
-def evaluate(s, operation_id: str, live, settings, as_of=None, state: dict | None = None, use_stored: bool = True):
+def evaluate(s, operation_id: str, live, settings, as_of=None, state: dict | None = None, use_stored: bool = True,
+             opstate=None):
     """Uma avaliação completa (todas as famílias). Persiste estado e alertas; retorna (transições difundíveis, puladas)."""
     cfg = ops_config(s)
-    op, snap = _snapshot(s, operation_id, as_of, live, settings)
+    op, snap = _snapshot(s, operation_id, as_of, live, settings, opstate)
     if state is None and use_stored:
         state = load_state(s, op.origin, op.machine_id)
     state, trs, skipped = OA.step(state, snap, cfg)
@@ -128,42 +130,101 @@ def evaluate(s, operation_id: str, live, settings, as_of=None, state: dict | Non
     return persist(s, trs), skipped, state
 
 
+def current_operations(s, origin: str | None = None, machine_id: str | None = None) -> dict:
+    """Operação corrente de cada máquina: a ativa de início mais recente, por (origem, máquina). Só ela é dona do
+    estado ao vivo; outra operação ativa da mesma máquina (cadastro sobreposto) não é avaliada ao vivo."""
+    q = select(OperationRow).where(OperationRow.status == "active")
+    if origin is not None:
+        q = q.where(OperationRow.origin == origin)
+    if machine_id is not None:
+        q = q.where(OperationRow.machine_id == machine_id)
+    cur: dict = {}
+    for r in s.execute(q.order_by(OperationRow.start, OperationRow.id)).scalars():
+        cur[(r.origin, r.machine_id)] = r                 # ordem crescente: fica a de início mais recente
+    return cur
+
+
+def _last_ts(s, row):
+    mx = s.execute(select(func.max(TelemetryRow.ts)).where(TelemetryRow.machine_id == row.machine_id,
+                                                            TelemetryRow.origin == row.origin)).scalar()
+    return None if mx is None else (mx if mx.tzinfo else mx.replace(tzinfo=timezone.utc))
+
+
+def _public_transitions(trs: list[dict]) -> list[dict]:
+    return [{"transition": tr["action"], **tr["alert"]} for tr in trs if tr["action"] != "update"]
+
+
 def replay(s, operation_id: str, live, settings, end: datetime | None = None, window_s: float | None = None,
            step_s: float | None = None):
     """Reconstrói os alertas operacionais a partir do histórico: estado novo, avaliações a cada ``step_s`` de
     ``end − window_s`` até ``end`` (padrão: a janela de confirmação, para abrir o que está sustentado agora).
-    Substitui os alertas operacionais anteriores dessa operação."""
+
+    O estado ao vivo da máquina nunca é usado como ponto de partida, e só é trocado quando a reconstrução representa
+    o presente daquela máquina:
+    - **reconstrução** (``end`` omitido ou no último dado): substitui os alertas operacionais desta operação. Se ela é a
+      operação corrente da máquina (``current_operations``), o estado reconstruído vira o estado ao vivo e alertas
+      ativos de outras operações que estavam nele são encerrados. Se não é, o estado ao vivo só perde as referências
+      a esta operação, e o que ficou ativo no fim da reconstrução é encerrado (a operação não está em andamento).
+    - **auditoria** (``end`` anterior ao último dado): nada é gravado, nem alertas nem estado (``persisted = False``).
+
+    Retorna (transições, regras puladas, estado final, persisted)."""
     cfg = ops_config(s)
     row = s.get(OperationRow, operation_id)
     if row is None:
         from fastapi import HTTPException
         raise HTTPException(404, "operação não cadastrada")
-    if end is None:
-        mx = s.execute(select(func.max(TelemetryRow.ts)).where(TelemetryRow.machine_id == row.machine_id,
-                                                                TelemetryRow.origin == row.origin)).scalar()
-        if mx is None:
-            return [], [], None
-        end = mx if mx.tzinfo else mx.replace(tzinfo=timezone.utc)
+    mx = _last_ts(s, row)
+    if mx is None:
+        return [], [], None, False
+    end = mx if end is None else end
+    rebuild = end >= mx
     step_s = step_s or max(cfg.confirm_s, 1.0)
     window_s = cfg.confirm_s if window_s is None else window_s
-    s.execute(delete(AlertRow).where(AlertRow.operation_id == operation_id, AlertRow.category == "operational"))
-    delete_states(s, row.origin, row.machine_id)
-    state, out, skipped = None, [], []
+    state, trs, skipped, snap = OA.new_state(), [], [], None
     n = max(int(window_s // step_s), 0)
     for k in range(n, -1, -1):
         t = end - timedelta(seconds=k * step_s)
-        tr, skipped, state = evaluate(s, operation_id, live, settings, as_of=t, state=state or OA.new_state(), use_stored=False)
-        out += tr
+        _, snap = _snapshot(s, operation_id, t, live, settings)
+        state, tr, skipped = OA.step(state, snap, cfg)
+        trs += tr
+    store = getattr(live, "ops_cache", None)
+    if store is not None:                                 # cache de instantes passados: só serve a esta reprodução
+        store.entry(operation_id).past.release()
+    if not rebuild:
+        return _public_transitions(trs), skipped, state, False
+
+    current = current_operations(s, row.origin, row.machine_id).get((row.origin, row.machine_id))
+    is_current = current is not None and current.id == operation_id
+    live_state = load_state(s, row.origin, row.machine_id)
+    if is_current:
+        for fam, st in (live_state or {}).items():        # alertas de outras operações no estado ao vivo: encerra
+            act = st.get("active")
+            if act and act.get("operation_id") != operation_id:
+                trs.append(OA._close(st, act, snap, "resolve", f"Operação {operation_id} reconstruída como corrente."))
+    else:
+        for fam, st in state.items():                     # operação fora de andamento: nada fica aberto
+            if st.get("active"):
+                trs.append(OA._close(st, st["active"], snap, "resolve", "Operação não está em andamento; encerrado ao fim dos dados."))
+    s.execute(delete(AlertRow).where(AlertRow.operation_id == operation_id, AlertRow.category == "operational"))
+    s.flush()
+    out = persist(s, trs)
+    if is_current:
+        save_state(s, row.origin, row.machine_id, state)
+    elif live_state:
+        for st in live_state.values():                    # as linhas desta operação agora são da reconstrução
+            if (st.get("active") or {}).get("operation_id") == operation_id:
+                st["active"], st["pending"], st["clearing"] = None, {}, None
+        save_state(s, row.origin, row.machine_id, live_state)
     s.commit()
-    return out, skipped, state
+    return out, skipped, state, True
 
 
 def watchdog(s, live, settings) -> list[dict]:
-    """Perda de conexão das operações ATIVAS (barato: só idade do dado; não recalcula missão)."""
+    """Perda de conexão da operação corrente de cada máquina (barato: só idade do dado; não recalcula missão)."""
     cfg = ops_config(s)
     now = datetime.now(timezone.utc)
     out = []
-    for row in s.execute(select(OperationRow).where(OperationRow.status == "active")).scalars():
+    for row in current_operations(s).values():
         q = select(func.max(TelemetryRow.ingested_at), func.max(TelemetryRow.ts)).where(
             TelemetryRow.machine_id == row.machine_id, TelemetryRow.origin == row.origin)
         ing, ts = s.execute(q).one()
