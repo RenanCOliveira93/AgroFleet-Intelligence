@@ -17,7 +17,7 @@ from sqlalchemy import delete, func, select
 from agrofleet.analytics import op_alerts as OA
 
 from .db import AlertRow, OperationRow, SettingRow, TelemetryRow, get_setting
-from .operations_api import STALE_AFTER_S, load_context
+from .operations_api import operation_state
 
 CFG_KEY = "ops_alert_config"
 
@@ -111,16 +111,18 @@ def priority_key(d: dict):
     return (d["status"] != "active", PRIORITY.get(d["severity"], 3), -datetime.fromisoformat(d["end"]).timestamp())
 
 
-def _snapshot(s, operation_id: str, as_of, live, settings):
-    op, prof, fld, fld_geo, df, now, as_of_, age, *_ = load_context(s, operation_id, as_of, live, settings)
-    ts = (as_of_ or now).isoformat()
-    return op, OA.snapshot_from_data(df, op, prof, fld_geo, ts, age)
+def _snapshot(s, operation_id: str, as_of, live, settings, opstate=None):
+    """Entradas das regras. ``opstate``: cálculo já feito (``operations_api.operation_state``), reaproveitado."""
+    st = opstate or operation_state(s, operation_id, as_of, live, settings)
+    ts = (st.as_of or st.now).isoformat()
+    return st.op, OA.snapshot_from_data(st.df, st.op, st.prof, st.fld_geo, ts, st.age, mission_result=st.mission)
 
 
-def evaluate(s, operation_id: str, live, settings, as_of=None, state: dict | None = None, use_stored: bool = True):
+def evaluate(s, operation_id: str, live, settings, as_of=None, state: dict | None = None, use_stored: bool = True,
+             opstate=None):
     """Uma avaliação completa (todas as famílias). Persiste estado e alertas; retorna (transições difundíveis, puladas)."""
     cfg = ops_config(s)
-    op, snap = _snapshot(s, operation_id, as_of, live, settings)
+    op, snap = _snapshot(s, operation_id, as_of, live, settings, opstate)
     if state is None and use_stored:
         state = load_state(s, op.origin, op.machine_id)
     state, trs, skipped = OA.step(state, snap, cfg)
@@ -185,6 +187,9 @@ def replay(s, operation_id: str, live, settings, end: datetime | None = None, wi
         _, snap = _snapshot(s, operation_id, t, live, settings)
         state, tr, skipped = OA.step(state, snap, cfg)
         trs += tr
+    store = getattr(live, "ops_cache", None)
+    if store is not None:                                 # cache de instantes passados: só serve a esta reprodução
+        store.entry(operation_id).past.release()
     if not rebuild:
         return _public_transitions(trs), skipped, state, False
 

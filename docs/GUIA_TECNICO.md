@@ -100,7 +100,7 @@ Não existe seta do sistema para a máquina.
 1. O simulador ou dispositivo publica um envelope v1 em `agrofleet/v1/<machine_id>/telemetry`.
 2. A thread MQTT do backend valida tópico, versão, schema e `machine_id`; mensagens inválidas viram rejeições com motivo.
 3. Pontos válidos entram em uma fila em memória (capacidade 200 000).
-4. Um laço assíncrono a cada 0,5 s drena até 5 000 pontos, grava com `INSERT ... ON CONFLICT DO NOTHING` (idempotente), carrega uma janela (padrão 600 s) das máquinas presentes no lote, roda as regras de anomalia (sem ML), faz `upsert` de alertas (funde por sobreposição de ±15 s) e envia `telemetry`/`alert` por WebSocket. Desde a Etapa 5, o mesmo laço também avalia os alertas operacionais das máquinas com operação ativa (no máximo a cada 30 s por máquina) e roda, a cada 30 s, um vigia de conexão que dispara mesmo sem mensagens (7.10).
+4. Um laço assíncrono a cada 0,5 s drena até 5 000 pontos, grava com `INSERT ... ON CONFLICT DO NOTHING` (idempotente), carrega uma janela (padrão 600 s) das máquinas presentes no lote, roda as regras de anomalia (sem ML), faz `upsert` de alertas (funde por sobreposição de ±15 s) e envia `telemetry`/`alert` por WebSocket. Desde a Etapa 5, o mesmo laço também avalia os alertas operacionais das máquinas com operação ativa (no máximo a cada 30 s por máquina) e roda, a cada 30 s, um vigia de conexão que dispara mesmo sem mensagens (7.10). Desde a Etapa 6, com cliente WebSocket conectado, envia também `operation_status` da operação corrente de cada máquina do lote (no máximo a cada `AGROFLEET_STATUS_INTERVAL_S`, padrão 5 s) e no ciclo do vigia; alertas, status e WebSocket usam um único cálculo incremental da missão (7.11).
 5. Exceções no lote são registradas em `stats.last_error` e não derrubam o laço; fila cheia incrementa `dropped_queue_full` (visível em `/health`).
 
 Implementação: `backend/app/live.py`.
@@ -346,6 +346,8 @@ podman compose exec db pg_dump -U $POSTGRES_USER $POSTGRES_DB > backup.sql
 | `AGROFLEET_TOKEN_TTL_S` | validade do token | padrão 28800 |
 | `AGROFLEET_MAX_UPLOAD_MB` | limite de upload | padrão 50 |
 | `AGROFLEET_ALERT_WINDOW_S` | janela das regras ao vivo | padrão 600 |
+| `AGROFLEET_STATUS_INTERVAL_S` | intervalo mínimo entre mensagens `operation_status` da mesma operação | padrão 5 |
+| `AGROFLEET_OPS_CACHE_SIZE` | operações mantidas no cache incremental (LRU, por processo) | padrão 8 (~40 MB por operação de 5 h, ~65 MB de 12 h) |
 | `AGROFLEET_CORS_ORIGINS` | CORS (lista por vírgula) | vazio = sem CORS |
 | `MQTT_HOST/PORT/USER/PASSWORD/CAFILE` | cliente MQTT do backend | `MQTT_HOST` vazio desliga o MQTT |
 | `HTTP_PORT` | porta do frontend | padrão 8080 |
@@ -524,16 +526,16 @@ O reenvio do mesmo arquivo não duplica dados (`stored: 0`, `duplicates_ignored`
 | frota | `GET /summary`, `/machines`, `/machines/{id}/telemetry`, `/machines/{id}/track`, `/playback` |
 | talhões | `GET /fields`, `POST /fields/upload` |
 | análise | `GET /metrics/{id}`, `/coverage`, `/reports` (`format=json\|csv`), `/postgis/check/{id}` |
-| alertas | `GET /alerts` (filtros `status`, `category`, `severity`, `operation_id`; `sort=priority`), `POST /alerts/recompute` (`operational=true` reabre os alertas operacionais sustentados), `GET\|PUT /config/alerts`, `GET\|PUT /config/alerts/operational`, `POST /operations/{id}/alerts/replay` (analyst) |
+| alertas | `GET /alerts` (filtros `status`, `category`, `severity`, `operation_id`; `sort=priority`), `POST /alerts/recompute` (`operational=true` reabre os alertas operacionais sustentados), `GET\|PUT /config/alerts`, `GET\|PUT /config/alerts/operational`, `POST /operations/{id}/alerts/replay` (analyst; com `end` antes do último dado é auditoria e não grava nada: `persisted=false`) |
 | ingestão | `POST /uploads`, `GET /uploads`, `GET /ingest/rejects` |
 | cadastro | `GET /registry/properties`, `PUT /registry/properties/{id}` (admin); `GET /registry/machines`, `GET\|PUT /registry/machines/{id}` (PUT: admin); `GET /operations`, `GET\|PUT /operations/{id}` (PUT: analyst) |
-| operação (Etapa 4) | `GET /operations/{id}/status` (missão, autonomia, conexão, último estado, série por intervalo), `GET /operations/{id}/geometry` (talhão, trabalhado, pendente, fora do talhão, trajeto, última posição e rumo). Ambos aceitam `as_of` (ver 7.9) |
+| operação (Etapa 4) | `GET /operations/{id}/status` (missão, autonomia, conexão, último estado, série por intervalo), `GET /operations/{id}/geometry` (talhão, trabalhado, pendente, fora do talhão, trajeto, última posição e rumo). Ambos aceitam `as_of` (ver 7.9). Desde a Etapa 6, calculados com cache incremental (7.11) |
 | demonstração | `POST /demo/load`, `POST /demo/operations/load` (cenários A/B/C), `GET /demo/evaluation`, `DELETE /data?origin=` (também apaga o cadastro dessa origem) |
 | ROI | `GET /roi/example`, `POST /roi`, `POST /roi/from-telemetry` |
 
 Parâmetros comuns: `origin` (`all|simulated|real|unknown`), `start`/`end` (ISO 8601 com fuso), `group_by` (`machine|property|field|operator`).
 
-**WebSocket `/ws`.** Após abrir a conexão, envie em até 5 s `{"type":"auth","token":"<jwt>"}`; sem isso o servidor fecha com código 4401. Em seguida o servidor envia `{"type":"hello"}`, `{"type":"telemetry","points":[...]}` e `{"type":"alert","alert":{...}}`. Alertas operacionais chegam com `category: "operational"` e `transition` (`raise`, `escalate`, `deescalate`, `resolve`). O canal é somente servidor para cliente; mensagens do cliente são ignoradas.
+**WebSocket `/ws`.** Após abrir a conexão, envie em até 5 s `{"type":"auth","token":"<jwt>"}`; sem isso o servidor fecha com código 4401. Em seguida o servidor envia `{"type":"hello"}`, `{"type":"telemetry","points":[...]}` e `{"type":"alert","alert":{...}}`. Alertas operacionais chegam com `category: "operational"` e `transition` (`raise`, `escalate`, `deescalate`, `resolve`). Desde a Etapa 6, `{"type":"operation_status","operation_id","machine_id","origin","status":{...}}`, em que `status` é o mesmo corpo de `GET /operations/{id}/status`: enviado só com cliente conectado, para a operação corrente de cada máquina, no máximo a cada `AGROFLEET_STATUS_INTERVAL_S` por operação e também a cada 30 s sem dado novo (o estado da conexão muda com o tempo). Cerca de 11 KB por mensagem com 5 h de operação (série de 30 intervalos). As mensagens anteriores não mudaram; clientes que não conhecem um tipo o ignoram. O canal é somente servidor para cliente; mensagens do cliente são ignoradas.
 
 ### 5.5 Alertas e configuração
 
@@ -766,7 +768,7 @@ Sensor com `sensor_quality = failed` não entra (não vira zero). O nível tem u
 | Casos à mão | 600 L, 50%, reserva de 10%, 30 L/h, restante 5 h → utilizável 240 L, autonomia 8 h, necessidade 150 L, margem 60% → verde; variações para amarelo, vermelho e cada motivo de cinza |
 | Geometria | sobreposição analítica (3 faixas de 2 m × 495 m) não infla o progresso; repasse não conta duas vezes; faixa fora do talhão não conta |
 
-Desempenho: 1,2 s por chamada de status para 3 h do cenário A; 7,6 s para o talhão completo (12 h). O cache é da Etapa 6.
+Desempenho sem cache: 1,2 s por chamada de status para 3 h do cenário A; 7,6 s para o talhão completo (12 h). Com o cálculo incremental da Etapa 6 (7.11), cerca de 0,15 s com o cache quente.
 
 ### 7.10 Alertas operacionais (`analytics/op_alerts.py`, `backend/app/op_alerts_service.py`)
 
@@ -788,15 +790,18 @@ Nível baixo e risco de não conclusão são **alertas distintos**: uma máquina
 - **Portões do `critical` de autonomia.** Taxa medida por sensor (não pela queda do nível), sensor e nível concordantes e janela sem lacunas. Se algum falha, o alerta fica em `warning` e a evidência diz por quê (`critical_gates_failed`).
 
 **Execução**
-- Ao vivo: avaliação completa das máquinas do lote com operação ativa, no máximo a cada `eval_interval_s`; vigia de conexão a cada 30 s.
+- Ao vivo: avaliação completa da **operação corrente** de cada máquina do lote (a ativa de início mais recente; outra operação ativa da mesma máquina não é avaliada), no máximo a cada `eval_interval_s`; vigia de conexão a cada 30 s.
+- Troca de operação: o alerta ativo de uma operação anterior é encerrado ("deixou de ser a operação corrente"), nunca herdado nem atualizado com dado da nova; a nova operação começa as contagens do zero.
 - Estado (pendências e alerta ativo por família) persistido em `settings`: sobrevive a reinícios.
-- `POST /operations/{id}/alerts/replay`: reconstrói com estado novo a partir do histórico. Padrão: a janela de confirmação no fim dos dados. `window_s`/`step_s` permitem auditar a operação inteira (uma avaliação completa por passo).
+- `POST /operations/{id}/alerts/replay`: reconstrói com estado novo a partir do histórico, sem partir do estado ao vivo. Padrão: a janela de confirmação no fim dos dados. `window_s`/`step_s` permitem auditar a operação inteira (uma avaliação por passo, incremental desde a Etapa 6).
+  - **Reconstrução** (sem `end`, ou `end` no último dado): substitui os alertas operacionais desta operação. Se ela é a operação corrente da máquina, o estado reconstruído vira o estado ao vivo, e alertas ativos de outras operações nesse estado são encerrados. Se não é, o estado ao vivo só perde as referências a esta operação, e o que ficou ativo no fim da reconstrução é encerrado.
+  - **Auditoria** (`end` anterior ao último dado): devolve as transições e não grava nada (`persisted=false`); estado ao vivo e alertas gravados ficam intactos.
 - `POST /demo/operations/load` faz esse replay no fim de cada operação; `POST /alerts/recompute` também, salvo `operational=false`. O recálculo de eventos não apaga alertas operacionais.
 - Em `/operations/{id}/status`, `alerts` lista os ativos da máquina por prioridade (crítico, aviso, informativo; recentes antes). É o estado atual, não reavaliado em `as_of`.
 
 Todo alerta crítico traz a nota: "A severidade crítica representa risco operacional estimado, não uma decisão automática de segurança. O sistema permanece exclusivamente de monitoramento, sem comandos para máquinas."
 
-**Validação** (`tests/test_op_alerts.py`, 30 testes)
+**Validação** (`tests/test_op_alerts.py`, 34 testes)
 
 | Caso | Resultado |
 |---|---|
@@ -804,6 +809,40 @@ Todo alerta crítico traz a nota: "A severidade crítica representa risco operac
 | Cenário B (replay a cada 5 min) | `autonomy_risk` crítico às 10:35: a ETA só existe após 30 min de operação, e a confirmação leva mais uma avaliação. São cerca de 3 h de antecedência sobre o retorno à base da verdade-terreno (13:33). `energy_level` em aviso às 12:10 e crítico às 13:25, como alerta separado. Sem regra de manutenção cadastrada (elétrico): pulada com o motivo |
 | Cenário A | 3 h sem nenhum alerta (verde, nível normal). Com a regra cadastrada, `maintenance_due` abre quando o horímetro passa de 4.832 h (fim da operação) |
 | API e ao vivo | demo abre B com crítico + aviso e A/C sem alertas; prioridade; compatibilidade dos alertas antigos; replay idempotente; vigia sem duplicar; caminho ao vivo respeita o intervalo; `DELETE /data` limpa o estado |
+| Isolamento do replay (revisão do PR #2) | troca de operação encerra o alerta da anterior; auditoria de janela passada não grava; reconstruir outra operação da mesma máquina preserva o estado e os alertas da corrente, e a avaliação seguinte não duplica; operação corrente = ativa mais recente |
+
+### 7.11 Cálculo incremental e cache (`analytics/incremental.py`, `backend/app/ops_cache.py`)
+
+Sem cache, cada chamada de status refaz a cobertura da operação inteira: 2,3 s com 5 h do cenário A e 6,5 s com 12 h. Medido com 12 h, 43% desse tempo vai na região ≥2× (interseções entre faixas), cerca de 45% na união acumulada da série por intervalo e 5% na união principal. Tudo isso só **acrescenta** no tempo: uma faixa, um par de faixas sobrepostas ou um intervalo de 10 min que dependem só de amostras anteriores a um corte não mudam com dado posterior.
+
+**O que congela.** Corte = início + K intervalos, com K = ⌊(última amostra − 120 s − início) / 10 min⌋. A margem de 120 s absorve o atraso e o fora de ordem comuns do enlace.
+- Intervalos 0..K−1 da série: as entradas e a união acumulada (∩ talhão).
+- Trechos contínuos cuja quebra já está decidida antes do corte (a amostra que decide se o trecho continua é anterior ao corte), unidos em `U`, com a área de `U ∩ talhão` acumulada.
+- Faixas por segmento com as duas pontas antes do corte, com a árvore espacial e a união das sobreposições entre elas.
+
+**A cada chamada** só a cauda é calculada: trechos não congelados, faixas novas contra a árvore congelada e entre si, e intervalos a partir de K. As áreas somam partes que não se sobrepõem:
+- única = |U| + |T − U|;
+- em talhão = |U ∩ F| + |(T − U) ∩ F|;
+- região ≥2× = |ov| + |N − ov|, em que N são as peças novas.
+
+A união para o mapa (`/geometry`) só é montada quando pedida.
+
+**Verificação, não confiança.** A cada chamada, o cache confere o hash das colunas que entram no cálculo (`ts`, posição, estado, precisão, largura, velocidade, vazão, combustível, potência e qualidades) nas amostras até a primeira depois do corte. Se algo mudou (chegada tardia, reentrega diferente), descarta e recalcula do zero. Também recomeça se mudarem o cadastro da operação, o talhão, a configuração, a zona UTM, o limite de lacuna ou a vizinhança de trajetória (estes dois dependem do dt mediano). O motivo fica em `stats.last_reset`. Com amostragem irregular, o dt mediano pode oscilar e o cache recomeçar mais vezes: o resultado continua correto e só a chamada fica mais lenta.
+
+**Igualdade com o cálculo completo** (`tests/test_incremental.py`, `tests/test_streaming.py`, `pytest -m infra`): campo a campo, com tolerância de 1e-6 relativo. Unir as mesmas peças em outra ordem já muda a área no GEOS: na região ≥2× de 5 h do cenário A (333 m², 17.744 peças), o próprio cálculo completo varia 1e-5 m² conforme a ordem, e o incremental fica nessa mesma ordem. Casos testados:
+- 13 instantes ao longo do cenário A;
+- cenário C montado pela ordem de chegada (perda, 4 min guardados e reenviados, latência de 25 s fora de ordem, reentregas), sem descartar o cache;
+- chegada tardia antes do corte (recalcula);
+- cadastro alterado e `as_of` anterior ao corte (recalcula);
+- teste de carga de 5 h (8.7.1).
+
+**Backend** (`ops_cache.py`, por processo, LRU de `AGROFLEET_OPS_CACHE_SIZE` operações):
+- **quadro**: lê do banco só as linhas com `ingested_at` desde a última leitura (folga de 5 s) e confere pela contagem de linhas da operação. Se não bater, relê tudo. As linhas de telemetria nunca mudam depois de gravadas (`ON CONFLICT DO NOTHING`).
+- **missão**: um cache para o presente e outro para `as_of`, para que uma reprodução ou auditoria não descarte o cache ao vivo. O de `as_of` é liberado ao fim de cada replay de alertas.
+- **geometria**: a resposta de `/geometry` fica guardada enquanto o dado e os parâmetros forem os mesmos.
+- Contadores em `/health` (`ops_cache`).
+
+Custo: a primeira chamada, ou a primeira depois de um descarte, custa o mesmo que o cálculo completo. A memória cresce com a operação, porque guarda as faixas por segmento (uma por segundo de trabalho) e as uniões. Medido pelo RSS marginal de cada operação adicional em cache: cerca de 40 MB com 5 h e 65 MB com 12 h do cenário A. Com o padrão de 8 operações, até cerca de 0,5 GB.
 
 ---
 
@@ -896,6 +935,27 @@ De `experiments/geodesy_check.json` (PostgreSQL 16 + PostGIS 3.4, contêiner amd
 ### 8.7 Ingestão sob rajada
 
 Teste ponta a ponta com 3 600 mensagens QoS 1 publicadas de uma vez: com o padrão do Mosquitto (`max_queued_messages` 1000), o broker descartou mensagens e 3 465 chegaram ao banco; com `max_queued_messages 100000` e `max_inflight_messages 100`, chegaram 3 600 sem descartes. Foi uma mudança de configuração observada em um ambiente (Podman emulado); não é prova de capacidade. O simulador publica com ritmo (`--speedup`).
+
+### 8.7.1 Carga de uma operação (Etapa 6)
+
+`scripts/bench_operations.py`: cenário A (talhão de 120 ha, trator diesel, 1 Hz), 5 h de dado (18.001 amostras) ingeridas por `Live.process` em lotes de 30 s de dado. Em cada lote: gravação, regras de evento, avaliação dos alertas operacionais (`eval_interval_s = 0`) e montagem de `operation_status` para um cliente conectado. É a cadência do tempo real (uma avaliação a cada 30 s). Resultados em `experiments/bench_operations*.json`.
+
+| Medida | SQLite | PostGIS 16 (emulado) |
+|---|---|---|
+| `process` por lote de 30 s (p50 / p95 / máx.) | 0,13 / 0,26 / 0,88 s | 0,22 / 0,39 / 1,06 s |
+| `GET /status` com cache quente, ao longo da operação (p50 / p95) | 0,13 / 0,21 s | 0,19 / 0,27 s |
+| Status sem cache com 5 h de dado (cálculo completo) | 2,33 s | 2,70 s |
+| Status no fim: frio (cache vazio) / quente | 2,31 / 0,16 s | 2,66 / 0,22 s |
+| `GET /geometry` no fim: frio / quente | 0,26 / 0,02 s | 0,39 / 0,08 s |
+| Mensagem `operation_status` (p50 / máx.) | 11,5 / 16,9 KB | 11,5 / 16,9 KB |
+
+`POST /demo/operations/load` com A, B e C em 3 h caiu de 15,3 s para 12,2 s; o tempo que resta é a gravação e a primeira avaliação de cada operação.
+
+O resultado com cache é igual ao cálculo completo no fim da operação, campo a campo. Ressalvas:
+- uma máquina, um computador de desenvolvimento (Apple Silicon) e o PostGIS emulado em amd64;
+- não mede muitas máquinas simultâneas nem a rede.
+
+Como ordem de grandeza: com cerca de 0,15 a 0,3 s por avaliação, o orçamento de 30 s comporta dezenas de máquinas por processo. Não foi medido.
 
 ### 8.8 O que não foi validado
 
@@ -992,7 +1052,8 @@ Origem declarada e visível; veredito de qualidade lido; largura efetiva calibra
 - Fila de ingestão em memória: mensagens ainda não gravadas se perdem se o processo cair; QoS 1 só protege até o ACK do cliente.
 - Rajada sem ritmo perde mensagens com o Mosquitto padrão (ver 8.7).
 - Pipeline ao vivo em um único processo; sem escala horizontal.
-- Sem teste de carga ou benchmark.
+- Teste de carga só com uma operação, uma máquina e um computador (8.7.1); capacidade com muitas máquinas simultâneas não medida.
+- Cache incremental por processo (7.11): a primeira chamada de cada operação, e a primeira depois de um descarte, custa o cálculo completo. A memória cresce com a duração da operação (~65 MB com 12 h); acima de `AGROFLEET_OPS_CACHE_SIZE` operações, as menos usadas voltam ao custo do cálculo completo.
 - Imagem PostGIS amd64 emulada em Apple Silicon.
 - Docker Desktop não testado (apenas Podman).
 - Após recriar o `backend`, reiniciar o `frontend` (nginx resolve o upstream na subida).

@@ -252,8 +252,12 @@ def insert_points(session: Session, points, upload_id: int | None = None) -> int
     return n
 
 
-def load_frame(session: Session, machine_ids=None, start=None, end=None, origin: str | None = None, field_id=None) -> pd.DataFrame:
+def load_frame(session: Session, machine_ids=None, start=None, end=None, origin: str | None = None, field_id=None,
+               ingested_since=None) -> pd.DataFrame:
+    """``ingested_since``: só linhas gravadas a partir desse instante (leitura incremental do cache de operação)."""
     q = select(*[getattr(TelemetryRow, c) for c in TEL_COLS]).order_by(TelemetryRow.machine_id, TelemetryRow.ts)
+    if ingested_since is not None:
+        q = q.where(TelemetryRow.ingested_at >= ingested_since)
     if machine_ids:
         q = q.where(TelemetryRow.machine_id.in_(machine_ids))
     if start is not None:

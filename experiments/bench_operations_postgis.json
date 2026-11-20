@@ -1,0 +1,113 @@
+{
+  "scenario": "A (talhão 120 ha, trator diesel, 1 Hz)",
+  "hours": 5.0,
+  "samples": 18001,
+  "batch_data_s": 30.0,
+  "db": "postgresql+psycopg",
+  "machine": {
+    "python": "3.11.9",
+    "platform": "macOS-15.8.2-arm64-arm-64bit",
+    "cpu": "arm"
+  },
+  "process_per_batch": {
+    "n": 601,
+    "p50_s": 0.2244,
+    "p95_s": 0.3853,
+    "max_s": 1.0639
+  },
+  "status_warm_http": {
+    "n": 31,
+    "p50_s": 0.185,
+    "p95_s": 0.2696,
+    "max_s": 0.2782
+  },
+  "status_full_no_cache": {
+    "n": 10,
+    "p50_s": 1.287,
+    "p95_s": 2.5387,
+    "max_s": 2.6959
+  },
+  "end": {
+    "status_cold_http_s": 2.658,
+    "status_warm_http_s": 0.224,
+    "geometry_cold_http_s": 0.386,
+    "geometry_warm_http_s": 0.082,
+    "worked_ha": 48.26031346732357,
+    "progress_pct": 40.21692788942507
+  },
+  "operation_status_msg_bytes": {
+    "n": 601,
+    "max": 16887,
+    "p50": 11464
+  },
+  "cached_equals_full": true,
+  "differences": [],
+  "ops_cache": {
+    "frame_hits": 42,
+    "frame_deltas": 600,
+    "frame_full": 2,
+    "evictions": 0,
+    "geometry_hits": 1
+  },
+  "live": {
+    "queued": 0,
+    "stored": 18001,
+    "dropped_queue_full": 0,
+    "batches": 601,
+    "ops_evaluations": 601,
+    "watchdog_runs": 5,
+    "status_messages": 606
+  },
+  "timeline": [
+    {
+      "data_h": 0.51,
+      "process_s": 0.1871,
+      "full_status_s": 0.1448
+    },
+    {
+      "data_h": 1.01,
+      "process_s": 0.2148,
+      "full_status_s": 0.3509
+    },
+    {
+      "data_h": 1.51,
+      "process_s": 0.2249,
+      "full_status_s": 0.5975
+    },
+    {
+      "data_h": 2.01,
+      "process_s": 0.2438,
+      "full_status_s": 0.8628
+    },
+    {
+      "data_h": 2.51,
+      "process_s": 0.2929,
+      "full_status_s": 1.1498
+    },
+    {
+      "data_h": 3.01,
+      "process_s": 0.3031,
+      "full_status_s": 1.4241
+    },
+    {
+      "data_h": 3.51,
+      "process_s": 0.3288,
+      "full_status_s": 1.7261
+    },
+    {
+      "data_h": 4.01,
+      "process_s": 0.3464,
+      "full_status_s": 2.0652
+    },
+    {
+      "data_h": 4.51,
+      "process_s": 0.3783,
+      "full_status_s": 2.3466
+    },
+    {
+      "data_h": 5.0,
+      "process_s": 0.3054,
+      "full_status_s": 2.6959
+    }
+  ]
+}
