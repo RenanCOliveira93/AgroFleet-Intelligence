@@ -131,11 +131,12 @@ Nada disso é calculado no navegador: todos os valores vêm do servidor. O paine
 | Seção | Subaba | O que você faz |
 |---|---|---|
 | **Frota** | — | Vê todas as máquinas: cartões com estado, última leitura e "ao vivo", e o mapa com a posição atual |
-| **Planejamento** | Operações | Consulta o cadastro de operações, máquinas e talhões (somente leitura; para cadastrar, seção 6). "Ver no painel" abre a operação |
+| **Planejamento** | Operações | Consulta operações, máquinas e talhões. O admin **cadastra e edita máquinas** por aqui (seção 6.2); operações, talhões e propriedades ainda são pela API (seção 6). "Ver no painel" abre a operação |
 | | Upload | Envia arquivos de telemetria (seção 7.3) |
 | **Análises** | Reprodução | Revê o histórico com um controle deslizante. Onde não houve posição (perda de GNSS), a máquina não é desenhada e a trilha é interrompida |
 | | Cobertura | Calcula a área bruta, a única, a sobreposição (área aplicada duas vezes) e a cobertura do talhão para as máquinas escolhidas |
-| | Relatórios | Gera e exporta relatórios (seção 8) |
+| | Relatórios | Gera e exporta relatórios em CSV (seção 8.2) |
+| | botão **Gerar relatório** | Relatório do período para **imprimir, salvar em PDF ou enviar por e-mail** (seção 8.1) |
 | | ROI | Simula o retorno do investimento com premissas editáveis; o botão de telemetria preenche premissas com dados medidos da frota |
 | **Alertas** | — | Lista os alertas com severidade, duração, regra e evidências. O analista pode clicar em **Recalcular alertas** |
 
@@ -145,7 +146,7 @@ Nada disso é calculado no navegador: todos os valores vêm do servidor. O paine
 
 O cadastro diz ao sistema **o que** cada máquina é (tanque, bateria, limites de alerta) e **o que** ela está fazendo (operação, talhão, área planejada). Sem ele, a telemetria ainda aparece na Frota, mas o painel Operação, a autonomia e a previsão de conclusão não funcionam.
 
-> Nesta versão, o cadastro é feito **pela API**, não por formulários na tela. A forma mais simples de usá-la é a página interativa em `http://<servidor>:8080/api/docs`: clique em **Authorize**, faça login e use **Try it out** em cada rota. Os exemplos abaixo usam `curl`.
+> **Máquinas** se cadastram pela tela (Planejamento → Operações → **Cadastrar máquina**, seção 6.2). Propriedade, talhões e operações ainda são cadastrados **pela API**. A forma mais simples de usá-la é a página interativa em `http://<servidor>:8080/api/docs`: clique em **Authorize**, faça login e use **Try it out** em cada rota. Os exemplos abaixo usam `curl`.
 
 **Preparação** (uma vez por sessão de terminal):
 
@@ -175,7 +176,25 @@ curl -s -X PUT $API/registry/properties/FAZ-SANTA-CLARA -H "$AUTH" -H 'content-t
 
 ### 6.2 Máquinas / veículos (admin)
 
-Uma chamada por máquina. O `machine_id` precisa ser **exatamente** o identificador que a máquina envia na telemetria.
+**Pela tela (recomendado):**
+
+1. Entre como **admin** e abra **Planejamento → Operações**.
+2. No quadro **Máquinas cadastradas**, clique em **Cadastrar máquina**.
+3. Preencha:
+   - **Identificador:** precisa ser **exatamente** o `machine_id` que a máquina envia na telemetria.
+   - **Nome:** como a máquina aparece nas telas e relatórios.
+   - **Origem:** "Real (máquina física)" para máquinas de verdade.
+   - **Propriedade:** só aparecem as da mesma origem.
+4. Em **Energia e autonomia**, escolha a fonte (diesel ou elétrico). Informe a capacidade (L ou kWh) e, se quiser, a reserva, os limites de alerta e a margem de autonomia.
+5. Clique em **Cadastrar máquina**.
+
+Só o identificador e o nome são obrigatórios. O formulário aponta os erros antes de enviar, com as mesmas regras do servidor: nível crítico menor que o de aviso, manutenção com intervalo e horímetro juntos, e assim por diante.
+
+Depois de salvar, a tela mostra **o tópico MQTT** em que o dispositivo da máquina deve publicar (seção 7.2). Para alterar uma máquina, use **Editar** na linha dela; o identificador e a origem não mudam na edição.
+
+![Formulário de cadastro de máquina](img/ui_cadastro_maquina.png)
+
+**Pela API** (para cadastrar muitas máquinas de uma vez ou integrar com outro sistema): uma chamada por máquina.
 
 Trator a diesel:
 
@@ -209,7 +228,7 @@ Pulverizador elétrico: use `"kind": "sprayer"`, `"energy_source": "electric"` e
 | `autonomy_margin_pct` | % | folga exigida para considerar a autonomia "suficiente" |
 | `maintenance_interval_h` + `last_maintenance_engine_h` | h de motor | alerta de manutenção preventiva (só com os dois preenchidos) |
 
-Campos opcionais podem ser omitidos. Sem capacidade cadastrada, a autonomia aparece como "não calculada", com o motivo. A mesma chamada `PUT` atualiza uma máquina já cadastrada.
+Os campos da tabela correspondem aos do formulário. Campos opcionais podem ser omitidos. Sem capacidade cadastrada, a autonomia aparece como "não calculada", com o motivo. A mesma chamada `PUT` atualiza uma máquina já cadastrada.
 
 ### 6.3 Talhões (analyst)
 
@@ -370,7 +389,26 @@ Unidades diferentes das padrão (km/h, kPa, psi, gal/h, Wh, fração 0–1) pode
 
 ## 8. Exportar relatórios e dados
 
-### 8.1 Pela tela (Análises → Relatórios)
+### 8.1 Relatório para imprimir ou enviar (Análises → Gerar relatório)
+
+1. Abra **Análises** e clique em **Gerar relatório**, no canto direito, em qualquer subaba.
+2. Escolha o **Período**: hoje, últimos 7 ou 30 dias, este mês, todo o histórico ou personalizado (datas De/Até). Os dias são contados no fuso da propriedade. A **propriedade** e a **origem** seguem os filtros do topo da tela.
+3. Confira a prévia. O relatório traz:
+   - **Resumo do período:** área trabalhada única e bruta, sobreposição, horas em trabalho e paradas ligadas, distância, volume e ritmo.
+   - **Operações:** situação, progresso, hectares trabalhados de planejados, ritmo, consumo médio e previsão de término.
+   - **Máquinas.**
+   - **Alertas**, por severidade.
+   - Avisos de origem e de escopo. Dados simulados vêm marcados em destaque.
+4. Escolha o que fazer:
+   - **Imprimir / salvar PDF:** abre a janela de impressão do navegador. Para gerar o arquivo, escolha a impressora **Salvar como PDF**. Só o relatório é impresso, em fundo branco, no formato A4.
+   - **Enviar por e-mail:** digite um ou mais endereços (separados por vírgula), ou deixe em branco. O seu programa de e-mail (Outlook, Gmail, Mail…) abre com o assunto e um resumo do relatório no corpo. Para enviar o relatório completo, **anexe o PDF** salvo no passo anterior. O e-mail sai da sua conta: a plataforma não envia e-mails sozinha nem usa serviço de e-mail pago.
+   - **Compartilhar** (aparece no celular e em navegadores compatíveis): envia o resumo por WhatsApp, e-mail ou outro aplicativo do aparelho.
+
+Com muitos dados (vários dias de várias máquinas), a geração pode levar alguns segundos; a tela avisa enquanto calcula.
+
+![Relatório para imprimir ou enviar](img/ui_relatorio_envio.png)
+
+### 8.2 Planilha CSV (Análises → Relatórios)
 
 1. Escolha **Agrupar por**: máquina, propriedade, talhão ou operador.
 2. Opcionalmente, defina o período (**De** / **Até**).
@@ -394,14 +432,15 @@ O arquivo `relatorio_<agrupamento>.csv` tem uma linha por grupo:
 
 Amostras sem o campo do agrupamento (por exemplo, sem `operator_id`) aparecem em "sem valor informado"; não são atribuídas a ninguém.
 
-### 8.2 Pela API (para planilhas, BI ou integrações)
+### 8.3 Pela API (para planilhas, BI ou integrações)
 
 Com o token da seção 6:
 
 | O que | Chamada |
 |---|---|
 | Relatório em CSV | `curl -s "$API/reports?group_by=field&origin=real&start=2026-11-01T00:00:00Z&end=2026-11-30T23:59:59Z&format=csv" -H "$AUTH" -o relatorio.csv` |
-| Relatório em JSON | o mesmo, com `format=json` |
+| Relatório em JSON | o mesmo, com `format=json` (`group_by=total` dá uma linha só com os totais) |
+| Relatório completo do período (o mesmo da seção 8.1) | `GET $API/reports/document?start=...&end=...&origin=real&property_id=FAZ-SANTA-CLARA` |
 | Telemetria de uma máquina | `GET $API/machines/TR-320/telemetry?start=...&end=...` |
 | Trilha (GeoJSON) | `GET $API/machines/TR-320/track` |
 | Situação de uma operação | `GET $API/operations/<id>/status` (missão, autonomia, consumo, série de 10 min) |
@@ -411,7 +450,7 @@ Com o token da seção 6:
 
 A lista completa de rotas, com teste interativo, está em `http://<servidor>:8080/api/docs`.
 
-Ainda não há exportação em PDF nem de imagem do mapa. Para apresentações, use a captura de tela, mantendo visível a atribuição do mapa (OpenFreeMap / EOX), como exigem as licenças.
+O PDF é gerado pelo navegador (seção 8.1); o relatório não inclui o mapa. Para apresentações com mapa, use a captura de tela, mantendo visível a atribuição do mapa (OpenFreeMap / EOX), como exigem as licenças.
 
 ---
 
@@ -445,6 +484,9 @@ Ainda não há exportação em PDF nem de imagem do mapa. Para apresentações, 
 | "Sem dados meteorológicos" | propriedade sem `ibge_municipality`, estação a mais de 60 km ou INMET indisponível | cadastrar o código IBGE (6.1); o motivo aparece ao passar o mouse |
 | Linhas recusadas no upload | horário sem fuso, posição (0,0), `lat` sem `lon`, valor negativo | o relatório de validação mostra o motivo de cada linha |
 | Relatório mistura simulado e real | filtro de origem em "Todas" | selecionar **REAL (declarado)** antes de gerar |
+| "Enviar por e-mail" não abre nada | o computador não tem um programa de e-mail padrão | defina um aplicativo de e-mail padrão no sistema, ou salve o PDF e anexe pelo webmail |
+| Botão "Cadastrar máquina" não aparece | só o admin cadastra máquinas | entrar como admin |
+| Máquina recém-cadastrada não aparece na lista | o filtro de origem ou de fazenda do topo mostra outra coisa | selecionar a origem certa ("Todas as origens") e a fazenda |
 | Fui desconectado | a sessão expirou (8 h) | entrar de novo |
 
 Dúvidas técnicas, instalação e configuração do servidor: [guia técnico](GUIA_TECNICO.md), seções 4 (instalação) e 13 (solução de problemas).

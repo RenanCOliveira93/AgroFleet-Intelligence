@@ -16,6 +16,8 @@ Plataforma de telemetria, monitoramento e auditoria de máquinas agrícolas, com
 - Área bruta, única e sobreposição; cobertura do talhão.
 - Detecção de anomalias por regras (apenas quando o sensor existe) e IsolationForest experimental.
 - Relatórios por máquina, propriedade, talhão, operador e período (JSON/CSV).
+- Relatório do período para imprimir, salvar em PDF ou enviar por e-mail (pelo navegador e pelo programa de e-mail do usuário, sem serviço pago).
+- Cadastro de máquinas pela tela, com validação e o tópico MQTT para ligar a máquina real.
 - Upload de CSV, JSON, GeoJSON e GPX com relatório de qualidade antes de gravar.
 - Ingestão MQTT com schema versionado (`agrofleet/v1`), autenticação e ACL.
 - Simulador reprodutível de 4 pulverizadores (operação normal, parada, perda de GNSS, vazão anormal, dados faltantes).

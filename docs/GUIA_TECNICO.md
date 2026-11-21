@@ -535,7 +535,8 @@ O reenvio do mesmo arquivo não duplica dados (`stored: 0`, `duplicates_ignored`
 | meta | `GET /health`, `GET /limits` (inclui o registro de adaptadores) |
 | frota | `GET /summary`, `/machines`, `/machines/{id}/telemetry`, `/machines/{id}/track`, `/playback` |
 | talhões | `GET /fields`, `POST /fields/upload` |
-| análise | `GET /metrics/{id}`, `/coverage`, `/reports` (`format=json\|csv`), `/postgis/check/{id}` |
+| análise | `GET /metrics/{id}`, `/coverage`, `/reports` (`format=json\|csv`; `group_by=total` dá uma linha com os totais do filtro), `/postgis/check/{id}` |
+| relatório (Etapa 10) | `GET /reports/document?start=&end=&origin=&property_id=&tz=` (viewer): conteúdo do relatório de período montado no backend: `totals` (`report(df, "total")`, área única = união de todas as máquinas), `machines` (com nome e tipo do cadastro), `operations` que se sobrepõem ao período (missão e consumo pelo mesmo cálculo de `/operations/{id}/status`, até 50), `alerts` (contagem por severidade e até 30 itens por prioridade), `data_origins`, `origin_notes`, `notes`, `generated_at`/`generated_by`. Sem telemetria no período: `totals: null`, nunca zeros. A interface imprime pelo navegador (PDF) e abre o e-mail do usuário (`mailto:`); nenhum serviço de e-mail é usado |
 | alertas | `GET /alerts` (filtros `status`, `category`, `severity`, `operation_id`; `sort=priority`), `POST /alerts/recompute` (`operational=true` reabre os alertas operacionais sustentados), `GET\|PUT /config/alerts`, `GET\|PUT /config/alerts/operational`, `POST /operations/{id}/alerts/replay` (analyst; com `end` antes do último dado é auditoria e não grava nada: `persisted=false`) |
 | ingestão | `POST /uploads`, `GET /uploads`, `GET /ingest/rejects` |
 | cadastro | `GET /registry/properties`, `PUT /registry/properties/{id}` (admin); `GET /registry/machines`, `GET\|PUT /registry/machines/{id}` (PUT: admin); `GET /operations`, `GET\|PUT /operations/{id}` (PUT: analyst) |
@@ -544,7 +545,7 @@ O reenvio do mesmo arquivo não duplica dados (`stored: 0`, `duplicates_ignored`
 | demonstração | `POST /demo/load`, `POST /demo/operations/load` (cenários A/B/C), `GET /demo/evaluation`, `DELETE /data?origin=` (também apaga o cadastro dessa origem) |
 | ROI | `GET /roi/example`, `POST /roi`, `POST /roi/from-telemetry` |
 
-Parâmetros comuns: `origin` (`all|simulated|real|unknown`), `start`/`end` (ISO 8601 com fuso), `group_by` (`machine|property|field|operator`).
+Parâmetros comuns: `origin` (`all|simulated|real|unknown`), `start`/`end` (ISO 8601 com fuso), `group_by` (`machine|property|field|operator|total`).
 
 **WebSocket `/ws`.** Após abrir a conexão, envie em até 5 s `{"type":"auth","token":"<jwt>"}`; sem isso o servidor fecha com código 4401. Em seguida o servidor envia `{"type":"hello"}`, `{"type":"telemetry","points":[...]}` e `{"type":"alert","alert":{...}}`. Alertas operacionais chegam com `category: "operational"` e `transition` (`raise`, `escalate`, `deescalate`, `resolve`). Desde a Etapa 6, `{"type":"operation_status","operation_id","machine_id","origin","status":{...}}`, em que `status` é o mesmo corpo de `GET /operations/{id}/status`: enviado só com cliente conectado, para a operação corrente de cada máquina, no máximo a cada `AGROFLEET_STATUS_INTERVAL_S` por operação e também a cada 30 s sem dado novo (o estado da conexão muda com o tempo). Cerca de 11 KB por mensagem com 5 h de operação (série de 30 intervalos). As mensagens anteriores não mudaram; clientes que não conhecem um tipo o ignoram. O canal é somente servidor para cliente; mensagens do cliente são ignoradas.
 
@@ -583,11 +584,12 @@ Acesse `http://<servidor>:<HTTP_PORT>` (padrão 8080) com usuário e senha defin
 |---|---|---|
 | Operação | — | Painel da operação selecionada (a ativa mais recente da propriedade; troca pelo seletor no card da máquina). Detalhes abaixo. |
 | Frota | — | Cartões por máquina (estado, velocidade, GNSS, vazão, pressão, tanque, motor e energia quando reportados, "ao vivo"); mapa com posição atual e trilha. Campo ausente aparece como "—", nunca como 0 |
-| Planejamento | Operações | Cadastro (somente leitura) de operações, máquinas e talhões da propriedade; "Ver no painel" abre a operação |
+| Planejamento | Operações | Operações, máquinas e talhões da propriedade; "Ver no painel" abre a operação. `admin` cadastra e edita máquinas em formulário (Etapa 10: `PUT /registry/machines/{id}`; validação no cliente espelha `MachineProfile`, campo vazio vira `null`, mensagens 422 do backend exibidas). Máquinas sem propriedade aparecem com qualquer propriedade selecionada |
 | Planejamento | Upload | Tipo, origem, fuso, unidades e `machine_id`; envio sem gravar mostra o relatório de qualidade; só então gravar. ISOXML retorna o motivo da recusa |
 | Análises | Reprodução | Controle deslizante sobre o histórico. Sem extrapolação: antes do primeiro ponto, depois do último ou durante perda de GNSS a máquina não é desenhada |
 | Análises | Cobertura | Área bruta, única, excesso e região >= 2x; cobertura do talhão; motivos de exclusão |
 | Análises | Relatórios | Agrupamento por máquina, propriedade, talhão ou operador, com período; exportação CSV |
+| Análises | botão "Gerar relatório" | Janela com período (hoje, 7 e 30 dias, mês, histórico, personalizado; dias no fuso da propriedade), prévia de `GET /reports/document`, **Imprimir / salvar PDF** (`window.print()` com CSS de impressão: só o relatório, A4, fundo branco), **Enviar por e-mail** (`mailto:` com assunto e resumo de até 1 800 caracteres; o PDF é anexado pelo usuário) e **Compartilhar** (Web Share API, quando o navegador oferece) |
 | Análises | ROI | Premissas editáveis; custo/ha, benefício, payback, VPL, tornado, pontos de equilíbrio e grade. O exemplo é ilustrativo |
 | Alertas | — | Lista com tipo, severidade, intervalo, regra e evidências; filtro por máquina quando aberta a partir do painel; `analyst` pode recalcular |
 | Sobre / limites (menu da conta) | — | Escopo, limites e estado de cada adaptador; `admin` carrega ou apaga a demonstração simulada |

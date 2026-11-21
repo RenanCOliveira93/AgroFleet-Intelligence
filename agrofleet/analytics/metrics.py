@@ -131,7 +131,7 @@ def filter_period(df: pd.DataFrame, start=None, end=None) -> pd.DataFrame:
     return df
 
 
-GROUPS = {"machine": "machine_id", "property": "property_id", "field": "field_id", "operator": "operator_id"}
+GROUPS = {"machine": "machine_id", "property": "property_id", "field": "field_id", "operator": "operator_id", "total": "total"}
 
 
 def report(df: pd.DataFrame, by: str = "machine", start=None, end=None, cfg: MetricsConfig | None = None) -> dict:
@@ -143,6 +143,8 @@ def report(df: pd.DataFrame, by: str = "machine", start=None, end=None, cfg: Met
     cfg = cfg or MetricsConfig()
     df = filter_period(df, start, end)
     key = GROUPS[by]
+    if by == "total":                         # um grupo só: totais do filtro, com área única = união de todas as máquinas
+        df = df.assign(total="total")
     rows = []
     for val, grp in df.groupby(df[key].fillna("__sem_valor__"), sort=True):
         per_machine = [machine_metrics(m, cfg, with_coverage=False) for _, m in grp.groupby("machine_id")]
