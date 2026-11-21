@@ -135,6 +135,7 @@ def test_fluxo_completo_com_dados_simulados(browser):
     tab(pg, "Relatórios")
     pg.get_by_test_id("group-by").select_option("field")
     expect(pg.get_by_test_id("report-table").locator("tbody tr")).to_have_count(4)
+    expect(pg.get_by_test_id("report-table")).to_contain_text("TALHAO-A")    # a resposta agrupada por talhão chegou
     pg.screenshot(path=str(IMG / "ui_relatorios.png"))
 
     # ROI
@@ -177,6 +178,8 @@ def test_viewer_nao_tem_acoes_de_escrita(browser):
     expect(pg.get_by_text("Upload requer o papel analista ou admin.")).to_be_visible()
     tab(pg, "Sobre / limites")
     expect(pg.get_by_test_id("load-demo")).to_have_count(0)
+    tab(pg, "Operações")
+    expect(pg.get_by_test_id("add-machine")).to_have_count(0)
 
 
 def test_shell_secoes_tema_e_badge(browser):
@@ -208,3 +211,44 @@ def test_shell_secoes_tema_e_badge(browser):
         expect(pg.get_by_test_id("alerts-badge")).to_have_text(str(n) if n <= 99 else "99+", timeout=40000)
     else:
         expect(pg.get_by_test_id("alerts-badge")).to_have_count(0)
+
+
+def test_cadastro_de_maquina_e_relatorio_para_envio(browser):
+    """Etapa 10: cadastro de máquina pela tela (admin) e relatório para imprimir/enviar na seção Análises."""
+    pg = login(browser)
+    tab(pg, "Operações")
+    pg.get_by_test_id("add-machine").click()
+    form = pg.get_by_test_id("machine-form")
+    form.get_by_role("button", name="Cadastrar máquina").click()
+    expect(pg.get_by_text("Informe o identificador.")).to_be_visible()          # validação antes de enviar
+    pg.locator("#mf-id").fill("TR-E2E-01")
+    pg.locator("#mf-name").fill("Trator E2E")
+    pg.locator("#mf-origin").select_option("real")
+    pg.locator("#mf-cap").fill("380")
+    pg.locator("#mf-warn").fill("20")
+    pg.locator("#mf-crit").fill("25")
+    expect(pg.get_by_text("O nível crítico deve ser menor que o de aviso.")).to_be_visible()
+    pg.locator("#mf-crit").fill("10")
+    form.get_by_role("button", name="Cadastrar máquina").click()
+    expect(pg.get_by_test_id("machine-saved")).to_contain_text("agrofleet/v1/TR-E2E-01/telemetry")
+    pg.get_by_role("button", name="Concluir").click()
+    expect(pg.get_by_test_id("registry-machines-table")).to_contain_text("TR-E2E-01")
+    h = {"Authorization": f"Bearer {api_token()}"}
+    m = requests.get(f"{URL}/api/registry/machines/TR-E2E-01", headers=h, timeout=20).json()
+    assert m["fuel_tank_capacity_l"] == 380 and m["origin"] == "real" and m["energy_reserve_pct"] is None   # vazio fica None
+
+    section(pg, "Análises")
+    pg.get_by_test_id("open-report").click()
+    pg.get_by_test_id("report-period").select_option("all")
+    doc = pg.get_by_test_id("report-doc")
+    expect(doc).to_contain_text("Relatório de operações")
+    expect(pg.locator(".rep-busy")).to_have_count(0, timeout=60000)
+    expect(doc).to_contain_text("Resumo do período")
+    expect(pg.get_by_test_id("report-print")).to_be_enabled()
+    expect(pg.get_by_test_id("report-mail")).to_be_enabled()
+    pg.emulate_media(media="print")
+    expect(pg.locator(".print-only .rdoc")).to_be_visible()
+    expect(pg.locator(".modal")).to_be_hidden()
+    pg.emulate_media(media="screen")
+    pg.keyboard.press("Escape")
+    expect(pg.get_by_test_id("report-doc")).to_have_count(0)

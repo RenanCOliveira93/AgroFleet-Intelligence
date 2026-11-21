@@ -4,12 +4,14 @@ import { api, ApiError } from "./api";
 import { OriginBadge } from "./Fleet";
 import { fmt } from "./lib";
 import { fmtDateTime } from "./shell";
+import { Plus } from "lucide-react";
+import { MachineFormDialog } from "./MachineForm";
 
 const STATUS_CLASS: Record<string, string> = { active: "st-active", planned: "st-planned", completed: "st-done", cancelled: "st-cancelled" };
 const ROLE_NOTE: Record<string, string> = {
   viewer: "Seu papel (visualizador) permite só leitura.",
-  analyst: "Somente leitura nesta tela. Operações são cadastradas pela API (PUT /operations/{id}, papel analista).",
-  admin: "Somente leitura nesta tela. Cadastro pela API: propriedades e máquinas (admin), operações (analista).",
+  analyst: "Máquinas são cadastradas pelo administrador. Operações: pela API (PUT /operations/{id}, papel analista).",
+  admin: "Máquinas: cadastre e edite abaixo. Propriedades, talhões e operações: pela API (veja o Guia do usuário).",
 };
 
 export function StatusPill({ status, label }: { status: string; label?: string }) {
@@ -21,6 +23,9 @@ export function PlanningTab({ ctx }: { ctx: Ctx }) {
   const [ops, setOps] = useState<any[] | null>(null);
   const [machines, setMachines] = useState<any[] | null>(null);
   const [err, setErr] = useState("");
+  const [form, setForm] = useState<{ machine?: any } | null>(null);
+  const [reload, setReload] = useState(0);
+  const isAdmin = ctx.role === "admin";
 
   useEffect(() => {
     let off = false;
@@ -29,12 +34,12 @@ export function PlanningTab({ ctx }: { ctx: Ctx }) {
       .then(([o, m]) => { if (!off) { setOps(o); setMachines(m); } })
       .catch((e) => { if (!off) { setErr(e instanceof ApiError ? String(e.detail) : "falha ao carregar o cadastro"); setOps([]); setMachines([]); } });
     return () => { off = true; };
-  }, [ctx.origin, ctx.machines.length]);
+  }, [ctx.origin, ctx.machines.length, reload]);
 
   const pid = ctx.propertyId;
   const inProp = (x: { property_id?: string | null }) => !pid || x.property_id === pid;
   const opsV = (ops ?? []).filter(inProp);
-  const machV = (machines ?? []).filter(inProp);
+  const machV = (machines ?? []).filter((m) => inProp(m) || !m.property_id);   // sem propriedade: aparece em qualquer filtro
   const fieldsV = ctx.fields.filter((f) => (ctx.origin === "all" || f.origin === ctx.origin) && inProp(f));
   const mName = (id: string) => (machines ?? []).find((m) => m.machine_id === id)?.name;
   const fName = (id: string) => ctx.fields.find((f) => f.id === id)?.name;
@@ -79,20 +84,24 @@ export function PlanningTab({ ctx }: { ctx: Ctx }) {
 
       <div className="grid2 even">
         <section className="card">
-          <h2>Máquinas cadastradas</h2>
-          {machines === null ? <p className="muted">Carregando…</p> : !machV.length ? <p className="muted">Nenhuma máquina cadastrada para a propriedade e a origem escolhidas.</p> : (
+          <div className="card-head">
+            <h2>Máquinas cadastradas</h2>
+            {isAdmin && <button className="sm" onClick={() => setForm({})} data-testid="add-machine"><Plus size={14} aria-hidden="true" /> Cadastrar máquina</button>}
+          </div>
+          {machines === null ? <p className="muted">Carregando…</p> : !machV.length ? <p className="muted">Nenhuma máquina cadastrada para a propriedade e a origem escolhidas.{isAdmin ? " Use “Cadastrar máquina” para incluir a primeira." : ""}</p> : (
             <div className="table-wrap">
               <table data-testid="registry-machines-table">
-                <thead><tr><th>Máquina</th><th>Tipo</th><th>Energia</th><th>Capacidade</th><th>Aviso / crítico</th><th>Manutenção</th><th>Origem</th></tr></thead>
+                <thead><tr><th>Máquina</th><th>Tipo</th><th>Energia</th><th>Capacidade</th><th>Aviso / crítico</th><th>Manutenção</th><th>Origem</th>{isAdmin && <th><span className="sr-only">Ações</span></th>}</tr></thead>
                 <tbody>{machV.map((m) => (
                   <tr key={m.machine_id}>
-                    <td><b>{m.name ?? m.machine_id}</b><br /><small className="muted">{m.machine_id}{m.autonomous ? " · autônoma" : ""}</small></td>
+                    <td><b>{m.name ?? m.machine_id}</b><br /><small className="muted">{m.machine_id}{m.autonomous ? " · autônoma" : ""}{!m.property_id ? " · sem propriedade" : ""}</small></td>
                     <td>{m.kind_label ?? m.kind}</td>
                     <td>{m.energy_label ?? m.energy_source}</td>
                     <td className="num">{m.fuel_tank_capacity_l != null ? fmt(m.fuel_tank_capacity_l, 0, "L") : m.battery_capacity_kwh != null ? fmt(m.battery_capacity_kwh, 0, "kWh") : <span className="muted" title="não informada no cadastro">—</span>}</td>
                     <td className="num">{fmt(m.energy_warning_pct, 0, "%")} / {fmt(m.energy_critical_pct, 0, "%")}</td>
                     <td className="num">{m.maintenance_interval_h != null ? `a cada ${fmt(m.maintenance_interval_h, 0, "h")}` : <span className="muted" title="intervalo não informado">—</span>}</td>
                     <td><OriginBadge origin={m.origin} /></td>
+                    {isAdmin && <td><button className="ghost sm" onClick={() => setForm({ machine: m })} aria-label={`Editar ${m.name ?? m.machine_id}`}>Editar</button></td>}
                   </tr>))}</tbody>
               </table>
             </div>)}
@@ -115,6 +124,8 @@ export function PlanningTab({ ctx }: { ctx: Ctx }) {
           <p className="muted small">— = não informado no cadastro. Nada é estimado nesta tela.</p>
         </section>
       </div>
+      {form && <MachineFormDialog machine={form.machine} properties={ctx.properties} existingIds={(machines ?? []).map((m) => m.machine_id)}
+        defaultProperty={ctx.propertyId} onClose={() => setForm(null)} onSaved={() => { setReload((n) => n + 1); ctx.refresh(); }} />}
     </div>
   );
 }

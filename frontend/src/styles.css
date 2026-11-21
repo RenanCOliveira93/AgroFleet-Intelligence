@@ -281,3 +281,82 @@ table.grid td, table.grid th { text-align: right; } table.grid tbody th { text-a
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
 }
+
+/* ---------- Etapa 10: janelas, cadastro de máquina e relatório ---------- */
+.modal-back { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 16px; background: rgba(4, 10, 8, .62); backdrop-filter: blur(2px); }
+.modal { width: min(560px, 100%); max-height: calc(100dvh - 32px); overflow: auto; background: var(--surface); color: var(--fg); border: 1px solid var(--line-strong); border-radius: var(--radius); box-shadow: var(--shadow); padding: 18px 20px; }
+.modal.wide { width: min(980px, 100%); }
+.modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.modal-head h2 { margin: 0; }
+.modal-x { display: inline-grid; place-items: center; padding: 6px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.modal fieldset { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px 14px 14px; margin: 0 0 12px; min-width: 0; }
+.modal legend { padding: 0 6px; font-weight: 650; color: var(--muted); font-size: 13px; }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 14px; align-items: start; }
+.ff { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ff label { font-size: 13px; font-weight: 600; }
+.ff input, .ff select { width: 100%; }
+.ff small { font-size: 11.5px; line-height: 1.35; }
+.ff.has-err input, .ff.has-err select { border-color: var(--danger); }
+.ff-err { color: var(--danger); }
+label.check { flex-direction: row; align-items: center; gap: 8px; align-self: end; padding-bottom: 8px; font-weight: 600; font-size: 13px; }
+.saved-box h3 { margin: 14px 0 6px; font-size: 15px; }
+.kvlist { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; margin: 8px 0; }
+.kvlist dt { color: var(--muted); }
+.kvlist dd { margin: 0; overflow-wrap: anywhere; }
+.kvlist code, .saved-box code { font-family: var(--mono); font-size: 12.5px; background: var(--surface-3); padding: 1px 5px; border-radius: 5px; }
+
+.subtabs-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.subtabs-row .subtabs { margin-bottom: var(--gap); }
+.report-btn, .rep-actions button { display: inline-flex; align-items: center; gap: 8px; }
+.rep-controls { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; margin-bottom: 10px; }
+.rep-controls label { flex-direction: row; align-items: center; gap: 8px; }
+.rep-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding: 10px 0 12px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+.rep-mail { display: flex; gap: 8px; flex: 1 1 340px; min-width: 0; }
+.rep-mail input { flex: 1; min-width: 0; }
+.rep-preview { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 16px; }
+
+.rdoc h1 { font-size: 1.35rem; margin: 2px 0 4px; }
+.rdoc h2 { font-size: 1.02rem; margin: 18px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+.rdoc p { margin: 4px 0; }
+.rdoc-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.rdoc-brand { font-weight: 800; color: var(--accent); letter-spacing: -.01em; }
+.rdoc-brand span { font-weight: 500; color: var(--muted); }
+.rdoc-meta { text-align: right; color: var(--muted); font-size: 12.5px; }
+.rdoc-sim { margin: 10px 0 4px !important; padding: 6px 10px; border-radius: 8px; background: var(--sim-soft); color: var(--sim); font-weight: 700; font-size: 13px; }
+.rdoc-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
+.rdoc-kpis > div { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--surface); }
+.rdoc-kpis small { display: block; color: var(--muted); font-size: 11.5px; }
+.rdoc-kpis b { font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+.rdoc-kpis span { display: block; color: var(--muted); font-size: 11.5px; }
+.rdoc-table { font-size: 12.5px; }
+.rdoc-foot { margin-top: 18px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; }
+.sev { font-weight: 700; }
+.sev-critical { color: var(--danger); } .sev-warning { color: var(--warn); } .sev-info { color: var(--info); }
+.print-only { display: none; }
+
+@media (max-width: 640px) {
+  .modal { padding: 14px; }
+  .rep-mail { flex-wrap: wrap; }
+  .rep-mail button { width: 100%; justify-content: center; }
+  .rdoc-meta { text-align: left; }
+}
+
+@media print {
+  @page { size: A4; margin: 12mm; }
+  html:has(body.printing-report) { background: #fff !important; }
+  body.printing-report { background: #fff !important; }
+  body.printing-report > *:not(.print-only) { display: none !important; }
+  body.printing-report .print-only { display: block; color: #111; background: #fff; font-size: 11px; }
+  .print-only .rdoc { --fg: #111; --muted: #555; --line: #bbb; --surface: #fff; --surface-2: #fff; --accent: #2F6E2F; --sim: #7a4300; --sim-soft: #fbe9d0;
+    --danger: #a11; --warn: #7a5200; --info: #1d4f86; color: #111; }
+  .print-only .table-wrap { overflow: visible; }
+  .print-only table { width: 100%; border-collapse: collapse; }
+  .print-only th, .print-only td { border-bottom: 1px solid #ccc; padding: 3px 5px; color: #111; background: #fff; text-align: left; }
+  .print-only tr, .print-only .rdoc-kpis > div { break-inside: avoid; }
+  .print-only h2 { break-after: avoid; }
+  .print-only .rdoc-kpis { grid-template-columns: repeat(4, 1fr); }
+}
+.rep-busy { margin: 0 0 10px; padding: 6px 10px; border-radius: 8px; background: var(--info-soft); color: var(--fg); font-size: 13px; }
+.rep-stale { opacity: .45; transition: opacity .2s; }
+.rdoc-op { min-width: 170px; }

@@ -16,6 +16,8 @@ Plataforma de telemetria, monitoramento e auditoria de máquinas agrícolas, com
 - Área bruta, única e sobreposição; cobertura do talhão.
 - Detecção de anomalias por regras (apenas quando o sensor existe) e IsolationForest experimental.
 - Relatórios por máquina, propriedade, talhão, operador e período (JSON/CSV).
+- Relatório do período para imprimir, salvar em PDF ou enviar por e-mail (pelo navegador e pelo programa de e-mail do usuário, sem serviço pago).
+- Cadastro de máquinas pela tela, com validação e o tópico MQTT para ligar a máquina real.
 - Upload de CSV, JSON, GeoJSON e GPX com relatório de qualidade antes de gravar.
 - Ingestão MQTT com schema versionado (`agrofleet/v1`), autenticação e ACL.
 - Simulador reprodutível de 4 pulverizadores (operação normal, parada, perda de GNSS, vazão anormal, dados faltantes).
@@ -98,6 +100,8 @@ tests/              pytest (unitários, API, infra, E2E)
 Todos os dados versionados (`sample_data/`, `payload_examples/`) são sintéticos ou fictícios; não há dados de terceiros. O clima é consultado em tempo de execução e exibido com a fonte ("Fonte: INMET"; Open-Meteo só em desenvolvimento não comercial). Dependências mantêm suas próprias licenças. Ver [seção 12 do guia técnico](docs/GUIA_TECNICO.md#12-licenças-e-atribuições).
 
 ## Documentação
+
+[Guia do usuário](docs/GUIA_DO_USUARIO.md): como usar cada tela, cadastrar fazenda, máquinas, talhões e operações, conectar a frota real (MQTT ou arquivo) e exportar relatórios.
 
 [Guia técnico](docs/GUIA_TECNICO.md): arquitetura, fontes de dados, instalação e reprodução, integração e API, metodologia, validação e métricas, limitações, segurança e solução de problemas.
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Bell, CalendarCheck, ChartSpline, Check, ChevronDown, Info, LogOut, Monitor, Moon, Sun, Tractor, Truck, User, type LucideIcon } from "lucide-react";
+import { Bell, CalendarCheck, ChartSpline, Check, ChevronDown, FileText, Info, LogOut, Monitor, Moon, Sun, Tractor, Truck, User, type LucideIcon } from "lucide-react";
 import { api, ApiError, openWs, setToken, type Role } from "./api";
 import { AlertsTab } from "./Alerts";
 import { CoverageTab } from "./Coverage";
@@ -7,6 +7,7 @@ import { FleetTab } from "./Fleet";
 import { applyTelemetry, ORIGIN_LABEL, provenanceBanner, type MachineRow, type OriginFilter } from "./lib";
 import { PlaybackTab } from "./Playback";
 import { ReportsTab } from "./Reports";
+import { ReportDialog } from "./ReportDocument";
 import { RoiTab } from "./Roi";
 import { AboutTab } from "./About";
 import { UploadTab } from "./Upload";
@@ -167,6 +168,7 @@ export function App() {
   const [session, setSession] = useState<{ role: Role; user: string } | null>(null);
   const [view, setView] = useState<View>("operation");
   const [subs, setSubs] = useState<Record<string, string>>(DEFAULT_SUB);
+  const [reportOpen, setReportOpen] = useState(false);
   const [params, setParams] = useState<Record<string, string>>({});
   const [origin, setOrigin] = useState<OriginFilter>("all");
   const [machines, setMachines] = useState<MachineRow[]>([]);
@@ -283,9 +285,14 @@ export function App() {
         </div>)}
       <main id="conteudo" className={`main main-${view}`} tabIndex={-1}>
         {view === "about" && <h1 className="sr-only">Sobre / limites</h1>}
-        {hasSubs && <SubTabs section={view as SectionId} value={sub} onChange={(id) => { setSubs((s) => ({ ...s, [view]: id })); setParams({}); }} />}
+        {hasSubs && (
+          <div className="subtabs-row">
+            <SubTabs section={view as SectionId} value={sub} onChange={(id) => { setSubs((s) => ({ ...s, [view]: id })); setParams({}); }} />
+            {view === "analysis" && <button className="report-btn" onClick={() => setReportOpen(true)} data-testid="open-report"><FileText size={16} aria-hidden="true" /> Gerar relatório</button>}
+          </div>)}
         <div id={`panel-${view}`} role={hasSubs ? "tabpanel" : undefined} aria-labelledby={hasSubs ? `tab-${sub}` : undefined}>{content}</div>
       </main>
+      {reportOpen && <ReportDialog ctx={ctx} onClose={() => setReportOpen(false)} />}
     </div>
   );
 }

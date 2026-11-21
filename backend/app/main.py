@@ -40,6 +40,7 @@ from .db import (AlertRow, FieldRow, MachineProfileRow, OperationRow, PropertyRo
 from .live import Live, alert_config, alert_to_dict, upsert_alert
 from . import op_alerts_service as OPS
 from .operations_api import build_operations_router
+from .report_doc import build_report_router
 from .ops_cache import OperationCache
 from .registry_api import build_router, labels_for_machine, upsert_machine, upsert_operation, upsert_property
 from .weather_api import build_weather_router
@@ -166,6 +167,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     viewer, analyst, admin = need("viewer"), need("analyst"), need("admin")
     app.include_router(build_router(session, viewer, analyst, admin))
     app.include_router(build_operations_router(session, viewer, live, st, clean))
+    app.include_router(build_report_router(session, viewer, live, st, clean))
     app.include_router(build_weather_router(session, viewer))
 
     # ---------- público ----------

@@ -367,3 +367,31 @@ O e2e rodou contra o servidor de desenvolvimento (Vite com proxy para a API), n�
 - Token do INMET exige Acordo de Cooperação Técnica; sem ele, as rotas públicas não documentadas do portal são usadas com cache longo.
 - Satélite gratuito com uso comercial limitado a 10 m (EOX 2016).
 - `README.en.md` não acompanha as Etapas 7 a 9.
+
+## Etapa 10 — Cadastro de máquina na tela e relatório para imprimir/enviar ✅
+
+Pedido após a Etapa 9: facilitar o cadastro de veículos e permitir imprimir ou enviar por e-mail o resultado do trabalho, com um botão em Análises.
+
+**Alterações**
+
+| Área | Mudança |
+|---|---|
+| Backend | `GET /reports/document` (`backend/app/report_doc.py`): totais, máquinas, operações (missão e consumo pelo mesmo cálculo do status) e alertas do período, com origem e avisos de escopo. Os dois agregados rodam em paralelo. `report()` ganhou `group_by="total"` (um grupo; área única = união entre as máquinas). |
+| Cadastro de máquina | Planejamento → Operações: **Cadastrar máquina** e **Editar** (admin). As regras de `MachineProfile` são repetidas no cliente para avisar antes de enviar; o backend continua decidindo. Campo vazio vira `null`. Trocar a origem limpa a propriedade de outra origem. Depois de salvar, a tela mostra o tópico MQTT da máquina. |
+| Relatório | Botão **Gerar relatório** em Análises: período no fuso da propriedade, prévia, impressão/PDF pelo navegador, e-mail via `mailto:` (sem servidor de e-mail, sem custo) e compartilhamento nativo no celular. |
+| Correção | Relatórios (CSV): o rótulo da linha usava o agrupamento do seletor antes de chegar a resposta nova, o que deixava a coluna vazia por um instante (e a captura `ui_relatorios.png` saía assim). Agora usa o `group_by` da resposta; o e2e espera a resposta certa. |
+| Documentação | Guia do usuário 6.2 (formulário) e 8.1 (imprimir/enviar); guia técnico (rota e telas). Capturas `ui_cadastro_maquina.png` e `ui_relatorio_envio.png`. |
+
+**Testes**
+
+| Suíte | Resultado |
+|---|---|
+| `pytest` | 273/273 (+4: total do relatório e documento) |
+| `pytest -m e2e` (Vite + API + SQLite temporários) | 6/6 (+1: cadastro de máquina e relatório, incluindo a mídia de impressão) |
+| `tsc --noEmit` / `vitest` | OK / 117/117 (+15: modelo do formulário, períodos com fuso e horário de verão, texto do e-mail) |
+
+**Limites**
+- O e-mail é aberto no programa do usuário e o PDF precisa ser anexado à mão: `mailto:` não anexa arquivos. Envio automático exigiria SMTP próprio (gratuito com um servidor da empresa), ficando para uma decisão futura.
+- Com cerca de 60 mil amostras, o relatório leva ~7 s, quase tudo na região de sobreposição (`overlap_region`), um custo que já existia em `/reports`. A tela avisa enquanto calcula.
+- Propriedade, talhões e operações continuam sendo cadastrados pela API.
+
