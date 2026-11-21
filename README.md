@@ -99,6 +99,8 @@ Todos os dados versionados (`sample_data/`, `payload_examples/`) são sintético
 
 ## Documentação
 
+[Guia do usuário](docs/GUIA_DO_USUARIO.md): como usar cada tela, cadastrar fazenda, máquinas, talhões e operações, conectar a frota real (MQTT ou arquivo) e exportar relatórios.
+
 [Guia técnico](docs/GUIA_TECNICO.md): arquitetura, fontes de dados, instalação e reprodução, integração e API, metodologia, validação e métricas, limitações, segurança e solução de problemas.
 
 ## Licença
